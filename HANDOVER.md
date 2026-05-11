@@ -7,10 +7,25 @@
 
 ## Status
 
-**Planning.** Hardware on hand, no firmware code yet. This handover
-captures the design decisions made during the 2026-05-11 evening
-planning session in `vu2cpl-shack` (closes-out conversation around
-HANDOVER #1 over there).
+**v0.1.1 running on the bench, 2026-05-11.** AS3935 wired and
+calibrated (`TRCO=OK SRCO=OK`), I²C solid at address `0x03`, MQTT
+pipe live to `192.168.1.169:1883`, WiFi auto-rejoins
+`apnet` via WiFiManager-saved creds, retained status auto-refreshes
+every 5 min. Indoor Pi daemon `as3935.service` on `noderedpi4`
+stopped and disabled — the ESP32 is now the sole publisher on
+`lightning/as3935/*`.
+
+Bench-verified end-to-end: piezo lighter sparks produce
+`event:"disturber"` events on `lightning/as3935`, counters increment
+correctly, hb publishes every 30 s, Node-RED's Lightning Antenna
+Protector flow consumes everything without changes.
+
+**Outstanding for v0.2.0+:** on-device TUN_CAP calibration mode
+(port `as3935_tune.py`), power chain (TP4056 + 18650 + solar),
+enclosure seal, field install with in-situ TUN_CAP re-tune.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for the version-by-version log
+and 2026-05-11 bring-up gotchas.
 
 ---
 

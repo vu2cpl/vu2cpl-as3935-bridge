@@ -65,17 +65,23 @@ move it into the IP65 enclosure.
 
 ### ESP32 ↔ AS3935
 
-| AS3935 pin | ESP32 NodeMCU pin | Wire colour suggestion |
-|------------|-------------------|------------------------|
-| VCC        | 3V3               | red                    |
-| GND        | GND               | black                  |
-| SDA        | GPIO21            | blue                   |
-| SCL        | GPIO22            | yellow                 |
-| IRQ        | GPIO27            | green                  |
-| SI         | VCC (or 3V3)      | — (jumper / solder)    |
-| A0         | GND               | — (jumper / solder)    |
-| A1         | GND               | — (jumper / solder)    |
-| MOSI / MISO / CS | — (NC)      | leave unconnected      |
+| AS3935 pin (datasheet) | Silkscreen label on this module | ESP32 NodeMCU pin | Wire colour suggestion |
+|------------------------|----------------------------------|-------------------|------------------------|
+| VCC        | `VCC`           | 3V3               | red                    |
+| GND        | `GND`           | GND               | black                  |
+| **SDA**    | **`D`**         | GPIO21            | blue                   |
+| **SCL**    | **`C`**         | GPIO22            | yellow                 |
+| IRQ        | `IRQ`           | GPIO27            | green                  |
+| SI         | `SI`            | VCC (or 3V3)      | — (jumper / solder)    |
+| A0         | `A0`            | GND               | — (jumper / solder)    |
+| A1         | `A1`            | GND               | — (jumper / solder)    |
+| MOSI / MISO / CS | (NC on I²C-mode boards) | — (NC) | leave unconnected      |
+
+> **Read the silkscreen carefully — the I²C pins are abbreviated.** On
+> the CJMCU-3935 / GY-AS3935 modules used here the data line is
+> labelled **`D`** (not `SDA`) and the clock line is labelled **`C`**
+> (not `SCL`). It's an easy 30-minute debug detour. `D → GPIO21`,
+> `C → GPIO22`.
 
 > **Why SI=VCC and A0=A1=GND:** the CJMCU-3935 / GY-AS3935 boards
 > ship as SPI by default. Tying SI high selects I²C mode; tying A0
