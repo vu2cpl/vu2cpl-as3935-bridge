@@ -1,41 +1,109 @@
 // vu2cpl-as3935-bridge — ESP32 firmware
-// MQTT contract identical to as3935_mqtt.py from vu2cpl-shack repo.
+//
+// MQTT contract is wire-identical to as3935_mqtt.py from vu2cpl-shack repo:
+// the Node-RED "Lightning Antenna Protector" tab consumes status/hb/event
+// payloads by exact field names. Any divergence breaks the dashboard.
 
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <Preferences.h>
+#include <time.h>
 #include "secrets.h"
 
-// Pins
-constexpr int PIN_AS3935_IRQ = 27;
+// ── Pins ─────────────────────────────────────────────────────────────────
+constexpr int PIN_AS3935_IRQ = 27;   // RTC-capable, needed for future EXT0 wake
 constexpr int PIN_I2C_SDA    = 21;
 constexpr int PIN_I2C_SCL    = 22;
 
-// MQTT
+// ── MQTT topics ──────────────────────────────────────────────────────────
 constexpr const char* TOPIC_EVENT  = "lightning/as3935";
 constexpr const char* TOPIC_STATUS = "lightning/as3935/status";
 constexpr const char* TOPIC_HB     = "lightning/as3935/hb";
-constexpr const char* TOPIC_LWT    = "lightning/as3935/lwt";
 constexpr const char* CLIENT_ID    = "as3935-bridge";
 
-// AS3935 (defaults — wire-equivalent to as3935_mqtt.py production config)
-constexpr uint8_t AS3935_I2C_ADDR = 0x03;
-constexpr uint8_t AS3935_NF       = 4;       // noise floor
-constexpr uint8_t AS3935_AFE_GB   = 0x1C;    // OUTDOOR mode
-constexpr uint8_t AS3935_WDTH     = 2;
-constexpr uint8_t AS3935_SREJ     = 2;
-uint8_t           as3935_tun_cap  = 10;      // overridden by NVS / cal
+// ── AS3935 ──────────────────────────────────────────────────────────────
+// Matches as3935_mqtt.py production config. Antenna is outdoor on this
+// bridge — AFE_GB nibble is 0x0E, which sits in REG_CFG0 bits [5:1] as
+// the mask 0x1C. (Python's set_antenna_mode writes the same 0x1C, OR'd
+// with reserved bits 7:6 and PWD bit 0.)
+constexpr uint8_t AS3935_I2C_ADDR        = 0x03;
+constexpr uint8_t AS3935_NF              = 4;       // 0..7, lower = more sensitive
+constexpr uint8_t AS3935_AFE_GB_CFG0     = 0x1C;    // CFG0 bits for outdoor (AFE_GB=0x0E)
+constexpr uint8_t AS3935_TUN_CAP_DEFAULT = 10;      // 0..15, ~8 pF/step; overridden by NVS
+constexpr const char* ANTENNA_STR        = "outdoor";
 
-constexpr uint32_t HEARTBEAT_MS = 30 * 1000;
+// AS3935 registers
+constexpr uint8_t REG_CFG0       = 0x00;
+constexpr uint8_t REG_CFG1       = 0x01;
+constexpr uint8_t REG_INT        = 0x03;
+constexpr uint8_t REG_ENERGY_L   = 0x04;
+constexpr uint8_t REG_ENERGY_M   = 0x05;
+constexpr uint8_t REG_ENERGY_H   = 0x06;
+constexpr uint8_t REG_DISTANCE   = 0x07;
+constexpr uint8_t REG_TUN_CAP    = 0x08;
+constexpr uint8_t REG_CALIB_RCO  = 0x3D;
+constexpr uint8_t REG_CALIB_TRCO = 0x3A;
+constexpr uint8_t REG_CALIB_SRCO = 0x3B;
+constexpr uint8_t CMD_CALIB_RCO  = 0x96;
 
+constexpr uint8_t INT_LIGHTNING = 0x08;
+constexpr uint8_t INT_DISTURBER = 0x04;
+constexpr uint8_t INT_NOISE     = 0x01;
+
+constexpr uint32_t HEARTBEAT_MS  = 30 * 1000;
+constexpr uint32_t NTP_WAIT_MS   = 10 * 1000;
+
+// ── Runtime state ────────────────────────────────────────────────────────
 WiFiClient   wifi;
 PubSubClient mqtt(wifi);
+Preferences  prefs;
+
+uint8_t as3935_tun_cap = AS3935_TUN_CAP_DEFAULT;
+const char* calib_trco = "UNKNOWN";
+const char* calib_srco = "UNKNOWN";
+
+struct Counters { uint32_t lightning = 0, disturber = 0, noise = 0, irq = 0; };
+Counters counters;
 
 volatile bool irqFired = false;
 void IRAM_ATTR onAs3935Irq() { irqFired = true; }
 
-// --- AS3935 helpers ---
+uint32_t bootEpoch  = 0;   // unix seconds at SNTP sync (for uptime_s)
+char     lwtPayload[64];   // must outlive mqtt.connect() — keep in BSS
+
+// ── Time ─────────────────────────────────────────────────────────────────
+// IST-5:30 = POSIX TZ for IST (UTC+5:30). Python daemon uses Pi's system
+// localtime; the Pi is IST. Match.
+bool waitForNtpSync(uint32_t timeoutMs) {
+    configTzTime("IST-5:30", "pool.ntp.org", "time.google.com");
+    uint32_t deadline = millis() + timeoutMs;
+    struct tm timeinfo;
+    while (millis() < deadline) {
+        if (getLocalTime(&timeinfo, 100) && timeinfo.tm_year > (2020 - 1900)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void isoNow(char* out, size_t n) {
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 50)) {
+        strftime(out, n, "%Y-%m-%dT%H:%M:%S", &timeinfo);
+    } else {
+        snprintf(out, n, "1970-01-01T00:00:00");
+    }
+}
+
+uint32_t uptimeSeconds() {
+    if (bootEpoch == 0) return millis() / 1000;
+    time_t now = time(nullptr);
+    return (now > (time_t)bootEpoch) ? (uint32_t)(now - bootEpoch) : 0;
+}
+
+// ── I²C helpers ──────────────────────────────────────────────────────────
 uint8_t as3935Read(uint8_t reg) {
     Wire.beginTransmission(AS3935_I2C_ADDR);
     Wire.write(reg);
@@ -50,18 +118,55 @@ void as3935Write(uint8_t reg, uint8_t v) {
     Wire.endTransmission();
 }
 
+// ── AS3935 init ──────────────────────────────────────────────────────────
+// Sequence is the Python daemon's, in the same order:
+//   self-test → antenna mode → noise floor → TUN_CAP → CALIB_RCO → INT flush
+// WDTH/SREJ are intentionally left at chip defaults to match the Python
+// daemon byte-for-byte. PRESET_DEFAULT is also skipped for the same reason.
 void as3935Init() {
-    // TODO: implement full datasheet init sequence:
-    //   1. PRESET_DEFAULT
-    //   2. CALIB_RCO + verify TRCO/SRCO bits in 0x3A/0x3B
-    //   3. Apply AFE_GB, NF, WDTH, SREJ
-    //   4. Apply persisted TUN_CAP
-    //   5. INT register flush
-    // Cross-reference vu2cpl-shack/as3935_mqtt.py for the exact byte sequence.
-    Serial.println("[as3935] init stub — implement before bench test");
+    uint8_t cfg0 = as3935Read(REG_CFG0);
+    Serial.printf("[as3935] CFG0=0x%02X (i2c addr 0x%02X)\n", cfg0, AS3935_I2C_ADDR);
+    if (cfg0 == 0x00 || cfg0 == 0xFF) {
+        Serial.println("[as3935] WARNING: CFG0 suspicious — chip may not be responding");
+    }
+
+    // Antenna mode (CFG0 bits [5:1] = AFE_GB). Preserve bits 7:6 (reserved) + 0 (PWD).
+    uint8_t v = (as3935Read(REG_CFG0) & 0xC1) | AS3935_AFE_GB_CFG0;
+    as3935Write(REG_CFG0, v);
+    Serial.printf("[as3935] antenna=%s CFG0=0x%02X\n", ANTENNA_STR, v);
+
+    // Noise floor (CFG1 bits [6:4]). Preserve bit 7 (PWD-related) + [3:0] (WDTH).
+    v = (as3935Read(REG_CFG1) & 0x8F) | ((AS3935_NF & 0x07) << 4);
+    as3935Write(REG_CFG1, v);
+    Serial.printf("[as3935] NF=%u CFG1=0x%02X\n", AS3935_NF, v);
+
+    // TUN_CAP (REG 0x08 low nibble). Preserve DISP bits [7:5] + reserved bit 4.
+    v = (as3935Read(REG_TUN_CAP) & 0xF0) | (as3935_tun_cap & 0x0F);
+    as3935Write(REG_TUN_CAP, v);
+    Serial.printf("[as3935] TUN_CAP=%u (~%u pF) REG0x08=0x%02X\n",
+                  as3935_tun_cap, as3935_tun_cap * 8, v);
+
+    // CALIB_RCO: write 0x96 to 0x3D, wait ≥2 ms, verify DONE=1 NOK=0 in TRCO/SRCO.
+    as3935Write(REG_CALIB_RCO, CMD_CALIB_RCO);
+    delay(5);
+    uint8_t trco = as3935Read(REG_CALIB_TRCO);
+    uint8_t srco = as3935Read(REG_CALIB_SRCO);
+    bool trcoOk = (trco & 0x80) && !(trco & 0x40);
+    bool srcoOk = (srco & 0x80) && !(srco & 0x40);
+    calib_trco = trcoOk ? "OK" : "FAIL";
+    calib_srco = srcoOk ? "OK" : "FAIL";
+    Serial.printf("[as3935] CALIB_RCO TRCO=%s (0x%02X) SRCO=%s (0x%02X)\n",
+                  calib_trco, trco, calib_srco, srco);
+    if (!trcoOk || !srcoOk) {
+        Serial.println("[as3935] WARNING: RC oscillator calibration failed");
+    }
+
+    // Flush any pending INT left from config writes.
+    uint8_t pending = as3935Read(REG_INT) & 0x0F;
+    Serial.printf("[as3935] cleared pending INT: 0x%X\n", pending);
 }
 
-// --- WiFi / MQTT ---
+// ── WiFi / SNTP / MQTT ───────────────────────────────────────────────────
 void wifiConnect() {
     Serial.printf("[wifi] connecting to %s...\n", WIFI_SSID);
     WiFi.mode(WIFI_STA);
@@ -75,12 +180,10 @@ void mqttConnect() {
     mqtt.setServer(MQTT_HOST, MQTT_PORT);
     while (!mqtt.connected()) {
         Serial.printf("[mqtt] connecting to %s:%d...\n", MQTT_HOST, MQTT_PORT);
-        // LWT: retained "offline" on disconnect
+        // LWT on STATUS topic (retained JSON) — matches Python daemon.
         if (mqtt.connect(CLIENT_ID, nullptr, nullptr,
-                         TOPIC_LWT, 0, true, "offline")) {
+                         TOPIC_STATUS, 1, true, lwtPayload)) {
             Serial.println("[mqtt] connected, LWT armed");
-            // Clear LWT immediately (will be re-set on actual disconnect)
-            mqtt.publish(TOPIC_LWT, "online", true);
         } else {
             Serial.printf("[mqtt] failed rc=%d, retry in 5s\n", mqtt.state());
             delay(5000);
@@ -88,70 +191,125 @@ void mqttConnect() {
     }
 }
 
-void publishStatus() {
+// ── Publish ──────────────────────────────────────────────────────────────
+void publishStatus(const char* event) {
+    char ts[24]; isoNow(ts, sizeof(ts));
     char buf[256];
     snprintf(buf, sizeof(buf),
-        "{\"up\":true,\"tun_cap\":%u,\"irq_pin\":%d,\"nf\":%u,"
-        "\"afe_gb\":\"0x%02X\",\"calib_trco\":\"ok\",\"calib_srco\":\"ok\","
-        "\"rssi\":%d,\"ts\":%lu,\"fw\":\"%s\"}",
-        as3935_tun_cap, PIN_AS3935_IRQ, AS3935_NF, AS3935_AFE_GB,
-        WiFi.RSSI(), (unsigned long)(millis()/1000), FIRMWARE_VERSION);
+        "{\"event\":\"%s\",\"ts\":\"%s\","
+        "\"noise_floor\":%u,\"antenna\":\"%s\","
+        "\"tun_cap\":%u,\"irq_pin\":%d,"
+        "\"calib_trco\":\"%s\",\"calib_srco\":\"%s\","
+        "\"fw\":\"%s\"}",
+        event, ts,
+        AS3935_NF, ANTENNA_STR,
+        as3935_tun_cap, PIN_AS3935_IRQ,
+        calib_trco, calib_srco,
+        FIRMWARE_VERSION);
     mqtt.publish(TOPIC_STATUS, buf, true);
-    Serial.printf("[mqtt] status published (retained): %s\n", buf);
+    Serial.printf("[mqtt] status: %s\n", buf);
 }
 
 void publishHeartbeat() {
-    char buf[96];
-    snprintf(buf, sizeof(buf), "{\"ts\":%lu,\"rssi\":%d}",
-             (unsigned long)(millis()/1000), WiFi.RSSI());
-    mqtt.publish(TOPIC_HB, buf);
+    char ts[24]; isoNow(ts, sizeof(ts));
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        "{\"alive\":true,\"ts\":\"%s\",\"uptime_s\":%lu,"
+        "\"counters\":{\"lightning\":%lu,\"disturber\":%lu,"
+        "\"noise\":%lu,\"irq\":%lu}}",
+        ts, (unsigned long)uptimeSeconds(),
+        (unsigned long)counters.lightning, (unsigned long)counters.disturber,
+        (unsigned long)counters.noise,     (unsigned long)counters.irq);
+    mqtt.publish(TOPIC_HB, buf, true);
 }
 
 void handleAs3935Event() {
-    delay(2);  // datasheet — 2 ms wait after IRQ before reading 0x03
-    uint8_t intReg = as3935Read(0x03) & 0x0F;
-    uint8_t distance = as3935Read(0x07) & 0x3F;
-    uint32_t energy  = ((uint32_t)(as3935Read(0x06) & 0x1F) << 16)
-                     | ((uint32_t)as3935Read(0x05) << 8)
-                     |             as3935Read(0x04);
+    delay(3);  // datasheet: wait ≥2 ms after IRQ before reading 0x03
+    uint8_t intReg = as3935Read(REG_INT) & 0x0F;
+    counters.irq++;
 
-    const char* event = "unknown";
-    switch (intReg) {
-        case 0x08: event = "lightning"; break;
-        case 0x04: event = "disturber"; break;
-        case 0x01: event = "noise";     break;
-    }
-
+    char ts[24]; isoNow(ts, sizeof(ts));
     char buf[160];
-    snprintf(buf, sizeof(buf),
-        "{\"event\":\"%s\",\"distance\":%u,\"energy\":%lu,\"timestamp\":%lu}",
-        event, distance, (unsigned long)energy,
-        (unsigned long)(millis()/1000));
-    mqtt.publish(TOPIC_EVENT, buf);
-    Serial.printf("[as3935] %s d=%u e=%lu\n", event, distance, (unsigned long)energy);
+
+    if (intReg == INT_LIGHTNING) {
+        uint8_t  distance = as3935Read(REG_DISTANCE) & 0x3F;
+        uint32_t energy   = ((uint32_t)(as3935Read(REG_ENERGY_H) & 0x1F) << 16)
+                          | ((uint32_t) as3935Read(REG_ENERGY_M)         <<  8)
+                          |              as3935Read(REG_ENERGY_L);
+        counters.lightning++;
+        snprintf(buf, sizeof(buf),
+            "{\"event\":\"lightning\",\"distance\":%u,\"energy\":%lu,"
+            "\"timestamp\":\"%s\"}",
+            distance, (unsigned long)energy, ts);
+        mqtt.publish(TOPIC_EVENT, buf);
+        Serial.printf("[as3935] ⚡ lightning d=%ukm e=%lu\n",
+                      distance, (unsigned long)energy);
+
+    } else if (intReg == INT_DISTURBER) {
+        counters.disturber++;
+        snprintf(buf, sizeof(buf),
+            "{\"event\":\"disturber\",\"timestamp\":\"%s\"}", ts);
+        mqtt.publish(TOPIC_EVENT, buf);
+        Serial.println("[as3935] ⚠ disturber");
+
+    } else if (intReg == INT_NOISE) {
+        counters.noise++;
+        snprintf(buf, sizeof(buf),
+            "{\"event\":\"noise\",\"timestamp\":\"%s\"}", ts);
+        mqtt.publish(TOPIC_EVENT, buf);
+        Serial.println("[as3935] 📡 noise");
+
+    } else {
+        Serial.printf("[as3935] spurious IRQ, INT=0x%X\n", intReg);
+    }
 }
 
-// --- Lifecycle ---
+// ── Lifecycle ────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.printf("\n[boot] vu2cpl-as3935-bridge %s\n", FIRMWARE_VERSION);
 
+    // Load persisted TUN_CAP from NVS (written by calibration mode).
+    prefs.begin("as3935", true);
+    as3935_tun_cap = prefs.getUChar("tun_cap", AS3935_TUN_CAP_DEFAULT);
+    prefs.end();
+
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     pinMode(PIN_AS3935_IRQ, INPUT);
     attachInterrupt(digitalPinToInterrupt(PIN_AS3935_IRQ), onAs3935Irq, RISING);
 
-    as3935Init();
     wifiConnect();
+
+    if (waitForNtpSync(NTP_WAIT_MS)) {
+        bootEpoch = (uint32_t)time(nullptr);
+        Serial.printf("[ntp] synced, bootEpoch=%lu\n", (unsigned long)bootEpoch);
+    } else {
+        Serial.println("[ntp] WARNING: not synced within timeout; timestamps will be bogus");
+    }
+
+    // Compose LWT now that the clock is set, so a future broker-side
+    // disconnect carries a meaningful boot-time timestamp (Python's quirk:
+    // LWT ts is frozen at script start, not at disconnect time).
+    char ts[24]; isoNow(ts, sizeof(ts));
+    snprintf(lwtPayload, sizeof(lwtPayload),
+             "{\"event\":\"offline\",\"ts\":\"%s\"}", ts);
+
     mqttConnect();
-    publishStatus();
+    as3935Init();
+    publishStatus("ready");
+
+    Serial.printf("[loop] entering main loop, IRQ on GPIO%d\n", PIN_AS3935_IRQ);
 }
 
 uint32_t lastHb = 0;
 
 void loop() {
     if (WiFi.status() != WL_CONNECTED) wifiConnect();
-    if (!mqtt.connected())             mqttConnect();
+    if (!mqtt.connected()) {
+        mqttConnect();
+        publishStatus("ready");  // re-publish on every reconnect (matches Python)
+    }
     mqtt.loop();
 
     if (irqFired) {

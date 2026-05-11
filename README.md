@@ -34,16 +34,18 @@ Existing MQTT broker: **Mosquitto on `192.168.1.169:1883`** (plain,
 no auth, LAN only).
 
 The MQTT contract is **identical to the previous
-`as3935_mqtt.py` Python daemon** — same topic, same JSON shape, same
+`as3935_mqtt.py` Python daemon** — same topics, same JSON shape, same
 heartbeat cadence, same LWT semantics — so the Node-RED Lightning
 Antenna Protector flow needs **zero changes**:
 
 | Topic | Direction | Payload |
 |-------|-----------|---------|
-| `lightning/as3935` | publish | `{event, distance, energy, timestamp}` per strike/disturber/noise event |
-| `lightning/as3935/status` | publish (retained) | `{up, tun_cap, irq_pin, nf, afe_gb, calib_trco, calib_srco, rssi, ts}` once at boot |
-| `lightning/as3935/hb` | publish | `{ts, rssi}` every 30 s |
-| `lightning/as3935/lwt` | LWT (retained) | `"offline"` set on broker disconnect |
+| `lightning/as3935` | publish | Lightning: `{event:"lightning", distance, energy, timestamp}`. Disturber: `{event:"disturber", timestamp}`. Noise: `{event:"noise", timestamp}`. |
+| `lightning/as3935/status` | publish (retained) | `{event:"ready"\|"offline", ts, noise_floor, antenna, tun_cap, irq_pin, calib_trco, calib_srco, fw}` on (re)connect; LWT publishes the same topic with `event:"offline"` retained. |
+| `lightning/as3935/hb` | publish (retained) | `{alive:true, ts, uptime_s, counters:{lightning, disturber, noise, irq}}` every 30 s. |
+
+`ts` / `timestamp` are local-IST ISO 8601 strings (`YYYY-MM-DDTHH:MM:SS`),
+matching the Python daemon. The ESP32 SNTP-syncs at boot.
 
 ## Hardware
 
