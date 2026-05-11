@@ -20,9 +20,19 @@ Bench-verified end-to-end: piezo lighter sparks produce
 correctly, hb publishes every 30 s, Node-RED's Lightning Antenna
 Protector flow consumes everything without changes.
 
-**Outstanding for v0.2.0+:** on-device TUN_CAP calibration mode
-(port `as3935_tune.py`), power chain (TP4056 + 18650 + solar),
-enclosure seal, field install with in-situ TUN_CAP re-tune.
+**Outstanding for v0.2.0+:**
+- **Enable WiFi modem sleep** (`WiFi.setSleep(WIFI_PS_MAX_MODEM)`) —
+  one-line firmware change that drops idle current from ~100-150 mA
+  to ~30 mA average while staying associated. Bench measurement
+  2026-05-12 showed bridge drawing 100-200 mA always-on; net daily
+  budget against a 1-2 W panel in Bengaluru sun is borderline
+  without this. Cheap intermediate before full deep-sleep.
+- On-device TUN_CAP calibration mode (port `as3935_tune.py`).
+- Power chain (TP4056 + 18650 + solar), with **panel mounted in
+  sun** even if enclosure is in shade (long cable).
+- Enclosure seal, field install with in-situ TUN_CAP re-tune.
+- Eventual deep-sleep + EXT0 wake on AS3935 IRQ (~10 µA between
+  events).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the version-by-version log
 and 2026-05-11 bring-up gotchas.
