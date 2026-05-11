@@ -64,8 +64,9 @@ constexpr uint8_t INT_LIGHTNING = 0x08;
 constexpr uint8_t INT_DISTURBER = 0x04;
 constexpr uint8_t INT_NOISE     = 0x01;
 
-constexpr uint32_t HEARTBEAT_MS  = 30 * 1000;
-constexpr uint32_t NTP_WAIT_MS   = 10 * 1000;
+constexpr uint32_t HEARTBEAT_MS        = 30 * 1000;
+constexpr uint32_t STATUS_REPUBLISH_MS = 5 * 60 * 1000;  // self-heal stale retained status
+constexpr uint32_t NTP_WAIT_MS         = 10 * 1000;
 
 // ── Runtime state ────────────────────────────────────────────────────────
 WiFiClient   wifi;
@@ -83,6 +84,7 @@ volatile bool irqFired = false;
 void IRAM_ATTR onAs3935Irq() { irqFired = true; }
 
 uint32_t bootEpoch  = 0;   // unix seconds at SNTP sync (for uptime_s)
+uint32_t lastStatusMs = 0; // millis() of last status publish (any reason)
 char     lwtPayload[64];   // must outlive mqtt.connect() — keep in BSS
 
 // ── Time ─────────────────────────────────────────────────────────────────
@@ -265,6 +267,7 @@ void publishStatus(const char* event) {
         calib_trco, calib_srco,
         FIRMWARE_VERSION);
     mqtt.publish(TOPIC_STATUS, buf, true);
+    lastStatusMs = millis();
     Serial.printf("[mqtt] status: %s\n", buf);
 }
 
@@ -381,5 +384,8 @@ void loop() {
     if (now - lastHb >= HEARTBEAT_MS) {
         lastHb = now;
         publishHeartbeat();
+    }
+    if (now - lastStatusMs >= STATUS_REPUBLISH_MS) {
+        publishStatus("ready");  // self-resets lastStatusMs; heals stale retained values
     }
 }
