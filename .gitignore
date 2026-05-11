@@ -1,0 +1,18 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+.clang_complete
+.gcc-flags.json
+*.o
+*.elf
+*.bin
+
+# Secrets
+src/secrets.h
+secrets.h
+
+# OS noise
+.DS_Store
+Thumbs.db
