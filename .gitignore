@@ -8,10 +8,7 @@
 *.o
 *.elf
 *.bin
-
-# Secrets
-src/secrets.h
-secrets.h
+firmware-combined.bin
 
 # OS noise
 .DS_Store

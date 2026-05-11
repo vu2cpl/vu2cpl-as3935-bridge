@@ -7,15 +7,27 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <time.h>
-#include "secrets.h"
+
+// ── MQTT broker (LAN, no auth) ───────────────────────────────────────────
+constexpr const char* MQTT_HOST = "192.168.1.169";
+constexpr uint16_t    MQTT_PORT = 1883;
+
+// ── WiFi config-portal (used on first boot or when stored creds fail) ────
+constexpr const char* WIFI_AP_SSID = "vu2cpl-as3935-setup";
+constexpr const char* WIFI_AP_PASS = "vu2cpl1234";
+constexpr uint16_t    WIFI_PORTAL_TIMEOUT_S = 300;  // 5 min
+constexpr uint32_t    WIFI_RECONNECT_TIMEOUT_MS = 5 * 60 * 1000;
 
 // ── Pins ─────────────────────────────────────────────────────────────────
-constexpr int PIN_AS3935_IRQ = 27;   // RTC-capable, needed for future EXT0 wake
-constexpr int PIN_I2C_SDA    = 21;
-constexpr int PIN_I2C_SCL    = 22;
+constexpr int PIN_AS3935_IRQ  = 27;  // RTC-capable, needed for future EXT0 wake
+constexpr int PIN_I2C_SDA     = 21;
+constexpr int PIN_I2C_SCL     = 22;
+constexpr int PIN_BOOT_BUTTON = 0;   // hold during boot → erase WiFi creds
+constexpr uint32_t BOOT_HOLD_MS = 3000;
 
 // ── MQTT topics ──────────────────────────────────────────────────────────
 constexpr const char* TOPIC_EVENT  = "lightning/as3935";
@@ -167,13 +179,59 @@ void as3935Init() {
 }
 
 // ── WiFi / SNTP / MQTT ───────────────────────────────────────────────────
-void wifiConnect() {
-    Serial.printf("[wifi] connecting to %s...\n", WIFI_SSID);
+// On first boot (or after BOOT-held reset, or when stored creds fail to
+// connect) WiFiManager raises an AP named WIFI_AP_SSID. Connect your
+// phone, the captive portal page lets you pick your home AP and enter
+// the password. Creds are then persisted by the ESP32 WiFi stack and
+// the AP closes on the next reboot.
+void checkBootButtonForReset() {
+    pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
+    delay(50);
+    if (digitalRead(PIN_BOOT_BUTTON) != LOW) return;
+
+    Serial.printf("[wifi] BOOT pressed — hold %lus to erase WiFi creds\n",
+                  (unsigned long)(BOOT_HOLD_MS / 1000));
+    uint32_t start = millis();
+    while (digitalRead(PIN_BOOT_BUTTON) == LOW) {
+        if (millis() - start >= BOOT_HOLD_MS) {
+            Serial.println("[wifi] BOOT held — erasing creds, entering portal");
+            WiFiManager wm;
+            wm.resetSettings();
+            wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
+            wm.startConfigPortal(WIFI_AP_SSID, WIFI_AP_PASS);
+            ESP.restart();
+        }
+        delay(50);
+    }
+}
+
+void wifiSetup() {
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print('.'); }
-    Serial.printf("\n[wifi] connected, RSSI %d dBm, IP %s\n",
+    WiFiManager wm;
+    wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
+    wm.setConnectTimeout(20);
+    Serial.printf("[wifi] auto-connect; if no stored creds, AP=%s pass=%s\n",
+                  WIFI_AP_SSID, WIFI_AP_PASS);
+    if (!wm.autoConnect(WIFI_AP_SSID, WIFI_AP_PASS)) {
+        Serial.println("[wifi] portal timeout / failed — restarting");
+        delay(1000);
+        ESP.restart();
+    }
+    Serial.printf("[wifi] connected, RSSI %d dBm, IP %s\n",
                   WiFi.RSSI(), WiFi.localIP().toString().c_str());
+}
+
+void wifiWaitForReconnect() {
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+        if (millis() - start > WIFI_RECONNECT_TIMEOUT_MS) {
+            Serial.println("[wifi] no reconnect within timeout — restarting");
+            delay(500);
+            ESP.restart();
+        }
+        delay(500);
+    }
+    Serial.printf("[wifi] reconnected, RSSI %d dBm\n", WiFi.RSSI());
 }
 
 void mqttConnect() {
@@ -275,11 +333,13 @@ void setup() {
     as3935_tun_cap = prefs.getUChar("tun_cap", AS3935_TUN_CAP_DEFAULT);
     prefs.end();
 
+    checkBootButtonForReset();
+
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     pinMode(PIN_AS3935_IRQ, INPUT);
     attachInterrupt(digitalPinToInterrupt(PIN_AS3935_IRQ), onAs3935Irq, RISING);
 
-    wifiConnect();
+    wifiSetup();
 
     if (waitForNtpSync(NTP_WAIT_MS)) {
         bootEpoch = (uint32_t)time(nullptr);
@@ -305,7 +365,7 @@ void setup() {
 uint32_t lastHb = 0;
 
 void loop() {
-    if (WiFi.status() != WL_CONNECTED) wifiConnect();
+    if (WiFi.status() != WL_CONNECTED) wifiWaitForReconnect();
     if (!mqtt.connected()) {
         mqttConnect();
         publishStatus("ready");  // re-publish on every reconnect (matches Python)

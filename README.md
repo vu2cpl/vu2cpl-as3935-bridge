@@ -61,7 +61,16 @@ matching the Python daemon. The ESP32 SNTP-syncs at boot.
 
 ## Build & flash
 
-See [`BUILD.md`](BUILD.md).
+See [`BUILD.md`](BUILD.md). WiFi credentials are not baked into the
+firmware — on first boot the ESP32 raises a captive portal AP
+(`vu2cpl-as3935-setup` / `vu2cpl1234`) so you can pick the shack AP
+and enter its password from your phone. Hold the BOOT button for 3 s
+at power-on to clear stored credentials.
+
+## Wiring
+
+See [`WIRING.md`](WIRING.md) for the connection diagram and bench
+bring-up checklist.
 
 ## Status
 

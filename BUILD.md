@@ -55,28 +55,55 @@ Requires PlatformIO CLI or the VS Code extension.
 ```sh
 git clone https://github.com/vu2cpl/vu2cpl-as3935-bridge.git
 cd vu2cpl-as3935-bridge
-cp src/secrets.example.h src/secrets.h
-# Edit src/secrets.h:
-#   WIFI_SSID, WIFI_PASS
-#   MQTT_HOST = "192.168.1.169"
-#   MQTT_PORT = 1883
-# Then:
 pio run -t upload
 pio device monitor -b 115200
 ```
 
-Expected boot output:
+There is no `secrets.h` to edit. WiFi credentials are entered via a
+captive portal on first boot (see Stage 3a below); the MQTT broker
+host is hardcoded to `192.168.1.169:1883` in `src/main.cpp`.
+
+### Stage 3a — First-boot WiFi setup (captive portal)
+
+On first power-on the ESP32 raises its own WiFi AP because it has no
+stored credentials yet:
+
+| Field | Value |
+|-------|-------|
+| AP SSID | `vu2cpl-as3935-setup` |
+| AP password | `vu2cpl1234` |
+| Captive portal URL | `http://192.168.4.1` (most phones auto-open it) |
+
+Steps:
+1. Power on the ESP32 (USB is fine for first setup).
+2. On your phone, connect to the WiFi network `vu2cpl-as3935-setup`
+   (password `vu2cpl1234`).
+3. The captive portal usually opens automatically. If not, open a
+   browser and visit `http://192.168.4.1`.
+4. Tap **Configure WiFi**, pick your shack AP, type the password, save.
+5. The ESP32 reboots into normal mode and stays connected to your AP
+   from now on. The setup AP is gone.
+
+To re-configure WiFi later (changed AP, new password, moved house) —
+hold the **BOOT button** on the NodeMCU for 3 seconds at power-on.
+This erases stored credentials and re-opens the setup AP.
+
+### Expected boot output (after WiFi is configured)
 
 ```
 [boot] vu2cpl-as3935-bridge v0.1.0
-[wifi] connecting to <SSID>...
+[wifi] auto-connect; if no stored creds, AP=vu2cpl-as3935-setup pass=vu2cpl1234
 [wifi] connected, RSSI -52 dBm, IP 192.168.1.xxx
+[ntp] synced, bootEpoch=1762885200
 [mqtt] connecting to 192.168.1.169:1883...
 [mqtt] connected, LWT armed
-[as3935] init at 0x03 over I2C
-[as3935] CALIB_RCO done: TRCO ok, SRCO ok
-[as3935] config NF=4, AFE_GB=0x1C (outdoor), WDTH=2, SREJ=2
-[as3935] published status (retained)
+[as3935] CFG0=0x24 (i2c addr 0x03)
+[as3935] antenna=outdoor CFG0=0x1C
+[as3935] NF=4 CFG1=0x42
+[as3935] TUN_CAP=10 (~80 pF) REG0x08=0x0A
+[as3935] CALIB_RCO TRCO=OK (0x80) SRCO=OK (0x80)
+[as3935] cleared pending INT: 0x0
+[mqtt] status: {...}
 [loop] entering main loop, IRQ on GPIO27
 ```
 

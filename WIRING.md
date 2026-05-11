@@ -1,0 +1,165 @@
+# WIRING — vu2cpl-as3935-bridge
+
+One picture of the whole bridge: ESP32 + AS3935 + 18650 power chain
++ solar input. Build it on the bench first, exactly like this, then
+move it into the IP65 enclosure.
+
+---
+
+## The whole thing
+
+```
+        ┌───────────────────────────┐
+        │     Solar panel 5 V       │
+        │      1 – 2 W              │
+        └────────┬──────────────┬───┘
+                 │ +            │ −
+                 ▼              ▼
+        ┌─────────────────────────────┐
+        │  TP4056 with protection IC  │
+        │  (DW01A + FS8205A variant)  │
+        │                             │
+        │   IN+   IN−   B+  B−   OUT+  OUT− │
+        └────┬─────┬────┬───┬─────┬─────┬───┘
+             │     │    │   │     │     │
+        (from panel)    │   │     │     │
+                        ▼   ▼     │     │
+                  ┌──────────┐    │     │
+                  │  18650   │    │     │
+                  │  Li-ion  │    │     │
+                  │ 3000 mAh │    │     │
+                  └──────────┘    │     │
+                                  │     │
+                                  ▼     ▼
+                        ┌──────────────────────────────┐
+                        │      ESP32 NodeMCU (38-pin)  │
+                        │                              │
+                        │   VIN ────────── + (from OUT+)│
+                        │   GND ────────── − (from OUT−)│
+                        │                              │
+                        │   3V3 ──┐                    │
+                        │   GND ──┼─┐                  │
+                        │   G21 ──┼─┼─┐                │
+                        │   G22 ──┼─┼─┼─┐              │
+                        │   G27 ──┼─┼─┼─┼─┐            │
+                        └─────────┼─┼─┼─┼─┼────────────┘
+                                  │ │ │ │ │
+                                  │ │ │ │ │
+                        ┌─────────┼─┼─┼─┼─┼────────┐
+                        │  AS3935 │ │ │ │ │ module │
+                        │         ▼ ▼ ▼ ▼ ▼        │
+                        │   VCC GND SDA SCL IRQ    │
+                        │                          │
+                        │   I²C mode jumpers:      │
+                        │     SI  → VCC  (I²C on)  │
+                        │     A0  → GND  ┐         │
+                        │     A1  → GND  ┘ addr 0x03│
+                        │                          │
+                        │   [ ferrite loop antenna ] │
+                        └──────────────────────────┘
+```
+
+---
+
+## Wire list
+
+### ESP32 ↔ AS3935
+
+| AS3935 pin | ESP32 NodeMCU pin | Wire colour suggestion |
+|------------|-------------------|------------------------|
+| VCC        | 3V3               | red                    |
+| GND        | GND               | black                  |
+| SDA        | GPIO21            | blue                   |
+| SCL        | GPIO22            | yellow                 |
+| IRQ        | GPIO27            | green                  |
+| SI         | VCC (or 3V3)      | — (jumper / solder)    |
+| A0         | GND               | — (jumper / solder)    |
+| A1         | GND               | — (jumper / solder)    |
+| MOSI / MISO / CS | — (NC)      | leave unconnected      |
+
+> **Why SI=VCC and A0=A1=GND:** the CJMCU-3935 / GY-AS3935 boards
+> ship as SPI by default. Tying SI high selects I²C mode; tying A0
+> and A1 low selects I²C address `0x03`, which is what the firmware
+> expects (`AS3935_I2C_ADDR = 0x03` in `main.cpp`). If your specific
+> module already has these as solder jumpers, just verify they're set
+> the right way — no extra wires needed.
+
+### Power chain
+
+| Wire | From | To | Notes |
+|------|------|----|-------|
+| Solar + | Panel + | TP4056 **IN+** | 5 V panel; TP4056 accepts 4.5 – 5.5 V |
+| Solar − | Panel − | TP4056 **IN−** | |
+| Battery + | 18650 + (top, button) | TP4056 **B+** | |
+| Battery − | 18650 − (bottom, flat) | TP4056 **B−** | |
+| Load + | TP4056 **OUT+** | ESP32 **VIN** | NodeMCU regulates to 3.3 V on-board |
+| Load − | TP4056 **OUT−** | ESP32 **GND** | common ground with everything else |
+
+> **Critical: use a TP4056 board with protection.** The bare TP4056
+> chip only charges — it does **not** protect against over-discharge.
+> Buy the variant labelled "TP4056 with protection" / "TP4056 + DW01A
+> + FS8205A". Visually it has **four pads** on the battery side
+> (B+/B−/OUT+/OUT−), not just two. The unprotected version has only
+> B+/B− and will eventually kill your 18650 by letting it discharge
+> below ~2.5 V.
+
+---
+
+## First-boot WiFi setup
+
+The firmware does not bake WiFi creds in. On first power-on:
+
+1. The ESP32 raises its own AP: **`vu2cpl-as3935-setup`** (password
+   `vu2cpl1234`).
+2. Connect your phone to that AP. The captive portal usually opens
+   automatically; if not, browse to `http://192.168.4.1`.
+3. Tap **Configure WiFi**, pick your shack AP, type the password,
+   save. The ESP32 reboots and joins it.
+
+To re-configure later (changed AP, new password): hold the
+NodeMCU's **BOOT button** for 3 s at power-on. Stored credentials
+are erased and the setup AP comes back up.
+
+---
+
+## Bench checklist
+
+Before you seal anything:
+
+1. **Power it from USB first.** Skip the battery / TP4056 / panel
+   entirely. ESP32 NodeMCU's micro-USB → laptop. Verify the serial
+   log shows `[as3935] CALIB_RCO TRCO=OK SRCO=OK`. If it doesn't,
+   the I²C wiring is wrong — fix that before touching the power
+   chain.
+2. **Add the battery + TP4056 next.** Disconnect USB, plug the
+   battery in, confirm the ESP32 boots from battery alone.
+3. **Add the solar panel last.** With battery installed, connect the
+   panel. In sunlight (or under a desk lamp close-up), TP4056's
+   **red LED** lights = charging; **blue LED** = full. If neither
+   lights with the panel in good light, the panel polarity or
+   voltage is off.
+4. **Verify on the broker side** before sealing the enclosure:
+   ```sh
+   mosquitto_sub -h 192.168.1.169 -t 'lightning/as3935/#' -v
+   ```
+   You should see the retained `status` message immediately, then
+   `hb` every 30 s.
+
+---
+
+## Where to mount
+
+- **In shade.** Direct Bengaluru sun → enclosure hits 60 – 70 °C →
+  18650 either won't charge (TP4056 cutoff above ~45 °C) or
+  degrades fast. A tree-shaded balcony or a roof-eave-shaded
+  south wall is fine.
+- **Antenna orientation: vertical.** The AS3935's ferrite bar
+  picks up best omnidirectionally when its long axis is vertical.
+- **WiFi RSSI ≥ −70 dBm at the mounting spot** before sealing.
+  Check with a phone WiFi-analyzer app held at the install
+  location; if it's marginal there, the ESP32's internal antenna
+  will be worse.
+
+---
+
+*73 de VU2CPL*
