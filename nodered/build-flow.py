@@ -160,7 +160,11 @@ HTML = """\
 JS = """\
 <script>
 (function(){
-  var scope = this;
+  // 'scope' is the AngularJS controller scope that Node-RED's ui_template
+  // exposes inside this <script> block. Do NOT shadow it with
+  // 'var scope = this;' — the IIFE's `this` is undefined/window and we'd
+  // lose access to scope.send / scope.$watch. The Master Dashboard
+  // template uses the same closure-from-controller pattern.
   var state = {};
   var hb = {counters:{}};
 
