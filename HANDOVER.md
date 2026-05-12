@@ -7,42 +7,61 @@
 
 ## Status
 
-**v0.1.1 running on the bench, 2026-05-11.** AS3935 wired and
-calibrated (`TRCO=OK SRCO=OK`), I²C solid at address `0x03`, MQTT
-pipe live to the shack broker, WiFi auto-rejoins the shack AP via
-WiFiManager-saved creds, retained status auto-refreshes
-every 5 min. Indoor Pi daemon `as3935.service` on `noderedpi4`
-stopped and disabled — the ESP32 is now the sole publisher on
-`lightning/as3935/*`.
+**v0.2.0 live on the bench, 2026-05-12.** Firmware now exposes the
+full AS3935 register surface as a runtime MQTT control channel
+(`lightning/as3935/cmd` + `cmd/ack`), NVS-persisted across reboots,
+range-validated per key. On-device TUN_CAP calibration runs as a
+`cmd` action — no re-flash, no enclosure-opening required for
+post-install re-tune. WiFi modem sleep enabled by default
+(`WIFI_PS_MAX_MODEM`). MQTT reconnect bounded + no-publish watchdog
+(10 min) → `ESP.restart()`. See [`CHANGELOG.md`](CHANGELOG.md).
 
-Bench-verified end-to-end: piezo lighter sparks produce
-`event:"disturber"` events on `lightning/as3935`, counters increment
-correctly, hb publishes every 30 s, Node-RED's Lightning Antenna
-Protector flow consumes everything without changes.
+The Node-RED **AS3935 Control Panel** is live on `noderedpi4` since
+2026-05-12 — a single `ui_template` (group `as3935_ctl_grp`, flow tab
+`fe70cfdcdfa19aa4` in vu2cpl-shack) wired to one mqtt-out for cmds and
+three mqtt-ins for status / hb / ack. Provides NF / WDTH / SREJ /
+TUN_CAP / Mask dist / AFE GB / Min strikes / Modem sleep knobs and the
+four actions. Styled to the GitHub-dark palette used by the rest of the
+shack dashboard. Source HTML/CSS/JS in
+[`nodered/build-flow.py`](nodered/build-flow.py); generated flow JSON
+in [`nodered/as3935-control-flow.json`](nodered/as3935-control-flow.json).
 
-**Done in v0.2.0 (2026-05-12):** WiFi modem sleep enabled by
-default (`WIFI_PS_MAX_MODEM`), on-device TUN_CAP calibration via
-the cmd topic (port of `as3935_tune.py`), MQTT command surface
-(`lightning/as3935/cmd`) for live tuning of every AS3935 parameter +
-ESP32 controls, bounded MQTT reconnect + no-publish watchdog → auto
-restart. See [`CHANGELOG.md`](CHANGELOG.md).
+**Downstream consumer:** [`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack)'s
+`Trigger Disconnect` (also rebuilt 2026-05-12) now uses this bridge's
+`lightning/as3935` events as the primary strike source for a 3×3
+distance-graded decision matrix (AS3935 close/medium/far × Open-Meteo
+cold/lit/severe). Strikes from this firmware are the *only* thing that
+fires the disconnect chain — Open-Meteo became a corroboration signal,
+not a trigger. Documented in `vu2cpl-shack/CLAUDE.md` "Lightning
+Antenna Protector → Distance-graded disconnect".
+
+**Bench-verified end-to-end** (v0.1.1 onwards, still holds at v0.2.0):
+piezo-lighter sparks produce `event:"disturber"` events on
+`lightning/as3935`, counters increment correctly, status republishes
+every 5 min, hb publishes every 30 s, ack publishes per command, and
+the shack flow's Lightning Antenna Protector consumes everything
+unchanged. Indoor Pi daemon `as3935.service` on `noderedpi4` stopped
+and disabled — the ESP32 is the sole publisher.
+
+**Previous milestone — v0.1.1, 2026-05-11:** AS3935 wired, calibrated
+(`TRCO=OK SRCO=OK`), I²C solid at `0x03`, MQTT pipe live to the shack
+broker, WiFi auto-rejoins via WiFiManager-saved creds. Retained status
+refreshes every 5 min.
 
 **Outstanding for v0.3.0+:**
-- Verify the modem-sleep current drop on the bench (expected
-  ~30-50 mA avg vs the 100-200 mA we measured at v0.1.1).
-- Power chain (TP4056 + 18650 + solar), with **panel mounted in
-  sun** even if enclosure is in shade (long cable).
-- Enclosure seal, field install with in-situ TUN_CAP re-tune
-  (now reachable from the shack via `{"action":"calibrate_tun_cap"}`
-  — no enclosure-opening needed).
-- Eventual deep-sleep + EXT0 wake on AS3935 IRQ (~10 µA between
-  events).
-- Node-RED dashboard tab — guide in [`nodered/README.md`](nodered/README.md)
-  describes how to wire it; not yet imported into the live Node-RED
-  on `noderedpi4`.
+- Verify modem-sleep current drop on the bench (expected ~30-50 mA avg
+  vs the 100-200 mA measured at v0.1.1).
+- Power chain (TP4056 + 18650 + solar), with **panel mounted in sun**
+  even if enclosure is in shade (long cable).
+- Enclosure seal, field install with in-situ TUN_CAP re-tune (now
+  reachable from the shack via `{"action":"calibrate_tun_cap"}` — no
+  enclosure-opening needed).
+- Eventual deep-sleep + EXT0 wake on AS3935 IRQ (~10 µA between events).
+- OTA updates (ArduinoOTA) so a sealed-box re-flash doesn't require
+  USB access.
 
-See [`CHANGELOG.md`](CHANGELOG.md) for the version-by-version log
-and 2026-05-11 bring-up gotchas.
+See [`CHANGELOG.md`](CHANGELOG.md) for the version-by-version log and
+2026-05-11/12 bring-up gotchas.
 
 ---
 

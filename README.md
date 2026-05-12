@@ -112,7 +112,29 @@ bring-up checklist.
 
 ## Status
 
-Project planning. See [`HANDOVER.md`](HANDOVER.md) for current state.
+**v0.2.0 live on the bench since 2026-05-12.** Firmware exposes the
+full AS3935 register surface over an MQTT command channel
+(`lightning/as3935/cmd` in, `lightning/as3935/cmd/ack` out), NVS-backed,
+range-validated. On-device TUN_CAP calibration runs as a `cmd`
+action — no enclosure-opening for re-tune after physical install.
+WiFi modem sleep enabled by default. MQTT reconnect bounded + no-publish
+watchdog → auto-restart.
+
+A Node-RED dashboard control panel ([`nodered/`](nodered/)) is **live**
+on the shack Pi (`noderedpi4`) since 2026-05-12 — provides knobs for
+every tunable + actions (Calibrate / Republish / Reboot / Factory Reset
+WiFi). Status / heartbeat / ack render in real time. The shack's
+distance-graded disconnect logic in [`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack)
+consumes this bridge's `lightning/as3935` event stream as its primary
+strike source.
+
+**Outstanding** (per [`HANDOVER.md`](HANDOVER.md) for full detail):
+verify modem-sleep current drop, build the power chain
+(TP4056 + 18650 + solar), seal the enclosure and do the field install
+with in-situ TUN_CAP recalibration over MQTT, then eventually
+deep-sleep + EXT0 wake on the AS3935 IRQ.
+
+See [`CHANGELOG.md`](CHANGELOG.md) for version-by-version history.
 
 ## License
 
