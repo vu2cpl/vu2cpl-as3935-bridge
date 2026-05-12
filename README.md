@@ -84,11 +84,26 @@ matching the Python daemon. The ESP32 SNTP-syncs at boot.
 
 ## Build & flash
 
-See [`BUILD.md`](BUILD.md). WiFi credentials are not baked into the
-firmware — on first boot the ESP32 raises a captive portal AP
-(`vu2cpl-as3935-setup` / `vu2cpl1234`) so you can pick the shack AP
-and enter its password from your phone. Hold the BOOT button for 3 s
-at power-on to clear stored credentials.
+**Quick path** — interactive installer:
+
+```sh
+git clone https://github.com/vu2cpl/vu2cpl-as3935-bridge.git
+cd vu2cpl-as3935-bridge
+python3 install.py
+```
+
+`install.py` installs PlatformIO if needed, prompts for your MQTT
+broker, captive-portal AP creds, timezone, serial port, and
+(optionally) Node-RED IDs, patches the source in place, and builds
+the firmware. You then run `pio run -t upload` to flash. See
+[`BUILD.md`](BUILD.md) for the manual step-by-step.
+
+WiFi credentials are not baked into the firmware — on first boot
+the ESP32 raises a captive portal AP (`vu2cpl-as3935-setup` /
+`vu2cpl1234` by default; the installer lets you change these) so
+you can pick the shack AP and enter its password from your phone.
+Hold the BOOT button for 3 s at power-on to clear stored
+credentials.
 
 ## Wiring
 

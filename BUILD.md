@@ -110,9 +110,33 @@ Use a TP4056 with **protection** (4 pads on the battery side).
 
 Requires Stage 0 prerequisites and the ESP32 plugged in via USB.
 
+### Path A — interactive installer (recommended for forks)
+
 ```sh
 git clone https://github.com/vu2cpl/vu2cpl-as3935-bridge.git
 cd vu2cpl-as3935-bridge
+python3 install.py
+```
+
+`install.py` prompts for your MQTT broker, captive-portal AP
+credentials, timezone, serial port, and (optionally) Node-RED
+IDs. It patches `src/main.cpp`, `platformio.ini`, and
+`nodered/build-flow.py` in place, regenerates the Node-RED flow
+JSON, and builds the firmware (but does **not** flash — you trigger
+that yourself). Re-run any time you want to change settings.
+
+Then to flash:
+
+```sh
+pio run -t upload
+pio device monitor
+```
+
+### Path B — manual config (for the maintainer / bench rebuilds)
+
+If you've already cloned and don't need to change defaults:
+
+```sh
 pio run -t upload
 pio device monitor
 ```
@@ -125,7 +149,7 @@ pio device monitor
 There is no `secrets.h` to edit. WiFi credentials are entered via a
 captive portal on first boot (Stage 3a). The MQTT broker host is
 hardcoded to `192.168.1.169:1883` in `src/main.cpp` — change there
-if you have a different LAN broker.
+or rerun `install.py` if you have a different LAN broker.
 
 ### Stage 3a — First-boot WiFi setup (captive portal)
 
