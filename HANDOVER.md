@@ -20,19 +20,26 @@ Bench-verified end-to-end: piezo lighter sparks produce
 correctly, hb publishes every 30 s, Node-RED's Lightning Antenna
 Protector flow consumes everything without changes.
 
-**Outstanding for v0.2.0+:**
-- **Enable WiFi modem sleep** (`WiFi.setSleep(WIFI_PS_MAX_MODEM)`) —
-  one-line firmware change that drops idle current from ~100-150 mA
-  to ~30 mA average while staying associated. Bench measurement
-  2026-05-12 showed bridge drawing 100-200 mA always-on; net daily
-  budget against a 1-2 W panel in Bengaluru sun is borderline
-  without this. Cheap intermediate before full deep-sleep.
-- On-device TUN_CAP calibration mode (port `as3935_tune.py`).
+**Done in v0.2.0 (2026-05-12):** WiFi modem sleep enabled by
+default (`WIFI_PS_MAX_MODEM`), on-device TUN_CAP calibration via
+the cmd topic (port of `as3935_tune.py`), MQTT command surface
+(`lightning/as3935/cmd`) for live tuning of every AS3935 parameter +
+ESP32 controls, bounded MQTT reconnect + no-publish watchdog → auto
+restart. See [`CHANGELOG.md`](CHANGELOG.md).
+
+**Outstanding for v0.3.0+:**
+- Verify the modem-sleep current drop on the bench (expected
+  ~30-50 mA avg vs the 100-200 mA we measured at v0.1.1).
 - Power chain (TP4056 + 18650 + solar), with **panel mounted in
   sun** even if enclosure is in shade (long cable).
-- Enclosure seal, field install with in-situ TUN_CAP re-tune.
+- Enclosure seal, field install with in-situ TUN_CAP re-tune
+  (now reachable from the shack via `{"action":"calibrate_tun_cap"}`
+  — no enclosure-opening needed).
 - Eventual deep-sleep + EXT0 wake on AS3935 IRQ (~10 µA between
   events).
+- Node-RED dashboard tab — guide in [`nodered/README.md`](nodered/README.md)
+  describes how to wire it; not yet imported into the live Node-RED
+  on `noderedpi4`.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the version-by-version log
 and 2026-05-11 bring-up gotchas.

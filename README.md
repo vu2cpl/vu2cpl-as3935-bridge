@@ -41,8 +41,10 @@ Antenna Protector flow needs **zero changes**:
 | Topic | Direction | Payload |
 |-------|-----------|---------|
 | `lightning/as3935` | publish | Lightning: `{event:"lightning", distance, energy, timestamp}`. Disturber: `{event:"disturber", timestamp}`. Noise: `{event:"noise", timestamp}`. |
-| `lightning/as3935/status` | publish (retained) | `{event:"ready"\|"offline", ts, noise_floor, antenna, tun_cap, irq_pin, calib_trco, calib_srco, fw}` on (re)connect; LWT publishes the same topic with `event:"offline"` retained. |
-| `lightning/as3935/hb` | publish (retained) | `{alive:true, ts, uptime_s, counters:{lightning, disturber, noise, irq}}` every 30 s. |
+| `lightning/as3935/status` | publish (retained) | Full state: `{event, ts, fw, ip, rssi, nf, wdth, srej, tun_cap, mask_dist, min_num_lightning, afe_gb, modem_sleep, irq_pin, calib_trco, calib_srco, …}` on (re)connect and every 5 min. LWT publishes the same topic with `event:"offline"` retained. |
+| `lightning/as3935/hb` | publish (retained) | `{alive:true, ts, uptime_s, rssi, counters:{lightning, disturber, noise, irq}}` every 30 s. |
+| `lightning/as3935/cmd` | **subscribe** | `{"set":"<key>","value":<v>}` or `{"action":"<name>"}` — live tuning. See [`nodered/README.md`](nodered/README.md). |
+| `lightning/as3935/cmd/ack` | publish | `{ok, cmd, error?, ts}` for every received command. |
 
 `ts` / `timestamp` are local-IST ISO 8601 strings (`YYYY-MM-DDTHH:MM:SS`),
 matching the Python daemon. The ESP32 SNTP-syncs at boot.

@@ -6,6 +6,86 @@ the `fw` field of every `lightning/as3935/status` MQTT payload.
 
 ---
 
+## v0.2.0 — 2026-05-12
+
+Adds a full MQTT control surface for live tuning, on-device LC-tank
+calibration, modem sleep, and reliability watchdogs. Existing
+status/hb/event payload keys are preserved — the Node-RED
+`Lightning Antenna Protector` flow keeps working unchanged.
+
+### MQTT command surface
+
+- **New subscribe topic** `lightning/as3935/cmd` accepting JSON
+  commands of two shapes:
+  - `{"set":"<key>","value":<v>}` for tunables.
+  - `{"action":"<name>"}` for actions.
+- **New publish topic** `lightning/as3935/cmd/ack` returning
+  `{ok, cmd, error?, ts}` for every received command (success and
+  validation error both produce an ack).
+- All `set` operations validate range/type, apply to the AS3935
+  immediately, and persist to NVS (`Preferences` namespace
+  `as3935`) — values survive reboot.
+
+Tunable keys: `nf` (0–7), `wdth` (0–15), `srej` (0–15), `tun_cap`
+(0–15), `mask_dist` (bool), `min_num_lightning` (1/5/9/16), `afe_gb`
+(`indoor`/`outdoor`), `modem_sleep` (`max`/`min`).
+
+Actions: `republish_status`, `calibrate_tun_cap`, `reboot`,
+`factory_reset_wifi`.
+
+See [`nodered/README.md`](nodered/README.md) for the dashboard
+wiring guide and [`nodered/cmd-examples.sh`](nodered/cmd-examples.sh)
+for `mosquitto_pub` one-liners.
+
+### On-device TUN_CAP calibration
+
+`calibrateTunCap()` is a direct port of the Python `as3935_tune.py`
+LCO sweep: set `LCO_FDIV=3` (÷128), enable `DISP_LCO`, sweep
+`TUN_CAP` 0..15 with a 2 s edge-counting window per value, pick the
+cap whose frequency lands closest to 500 kHz ± 3.5 %. Persists the
+winning cap to NVS, applies it, and re-publishes status.
+
+Runs from the cmd topic — no recompile, no re-flash, no enclosure
+opening. MQTT keepalive is pumped during the sweep so the ~35 s
+runtime doesn't drop the broker connection.
+
+### Status payload extended
+
+Adds `fw`, `ip`, `rssi`, and the current live value of every
+tunable to the retained status. The Python-era keys
+(`noise_floor`, `antenna`, `tun_cap`, `irq_pin`, `calib_*`) are
+preserved as aliases so existing subscribers don't break.
+
+Heartbeat payload also gains `rssi` so RSSI is visible every 30 s
+without waiting for a status republish.
+
+### Reliability watchdogs
+
+- **MQTT reconnect bounded**: after 60 failed connect attempts
+  (5 min total), `ESP.restart()` instead of looping forever.
+- **No-successful-publish watchdog**: if `mqtt.publish()` hasn't
+  returned `true` in 10 min, `ESP.restart()`. Catches the case
+  where the lib thinks it's connected but the broker silently
+  dropped us.
+- The existing ESP32 task watchdog on `loopTask` (5 s) is
+  unchanged — `delay()` / `yield()` everywhere keeps it fed.
+
+### WiFi modem sleep
+
+`WiFi.setSleep(WIFI_PS_MAX_MODEM)` enabled by default (toggleable
+via the `modem_sleep` cmd). Cuts average idle current from the
+~100-150 mA measured on the bench at v0.1.1 down to ~30-50 mA.
+First sustained-LAN measurement still TBD — see HANDOVER.
+
+### Other
+
+- AS3935 cold-bus first-read `0xFF` glitch is now retried once
+  before the warning fires, cutting noise in the boot log.
+- PubSubClient buffer raised from default 256 to 512 bytes to fit
+  the larger status payload.
+- Added `bblanchon/ArduinoJson @^7.0` for clean cmd parsing / status
+  serialisation. Flash cost ~16 KB; total now at 71.5 %.
+
 ## v0.1.1 — 2026-05-11
 
 - **Periodic status republish.** The ESP32 now republishes its
