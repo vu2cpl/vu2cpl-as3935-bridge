@@ -65,6 +65,47 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the version-by-version log and
 
 ---
 
+## Known gotchas
+
+**Dual CP2102 ports collide on the same `/dev/cu.usbserial-0001`.**
+This ESP32 board and the sibling [`esp8266-gps-ntp`](https://github.com/vu2cpl/esp8266-gps-ntp)
+NodeMCU both ship with Silicon Labs CP2102 USB-serial chips
+carrying the factory-locked default serial number `0001`. macOS
+(and Linux) hand `/dev/cu.usbserial-0001` to whichever board
+enumerated first, so a hard-coded `upload_port` in
+`platformio.ini` silently flashes the wrong board whenever both
+are connected.
+
+Reprogramming the CP2102 EEPROM to a unique serial number was
+investigated on 2026-05-12 from both macOS Sequoia (Apple Silicon)
+and Raspberry Pi OS using `cp210x-cfg` (DiUS/cp210x-cfg). The
+vendor-OUT control transfer returns success at the libusb level on
+both hosts with no error, but the chip's EEPROM is unchanged on the
+next enumeration — `iSerial` stays `0001`. Chip markings confirm
+genuine Silicon Labs CP2102 (not a CH9102X clone), so the write
+isn't being rejected at the protocol layer — the EEPROM was
+**factory-locked** by whoever assembled the dev board and the
+lock is permanent. No software path forward.
+
+Workaround in place since 2026-05-12: `flash.sh` and `monitor.sh`
+at the repo root enumerate the visible USB-serial devices and use
+bash's `select` to prompt for the right one when more than one is
+present. `platformio.ini` intentionally leaves `upload_port` /
+`monitor_port` unset so the wrappers are the single source of truth.
+
+```sh
+./flash.sh       # build + upload, prompts when >1 port present
+./monitor.sh     # serial monitor, same prompt
+```
+
+The same scripts and convention live in the sibling
+`esp8266-gps-ntp` repo. The rule *"ESP firmware projects use a
+`flash.sh`/`monitor.sh` picker, not a pinned `upload_port`"* is
+captured in `~/.claude/CLAUDE.md` so future ESP repos pick it up
+automatically.
+
+---
+
 ## Decisions taken
 
 | # | Decision | Reason |
