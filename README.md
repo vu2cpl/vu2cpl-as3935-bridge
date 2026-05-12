@@ -15,6 +15,27 @@ VU2CPL · Manoj · Bengaluru · MK83TE · Licensed 1993
 
 ---
 
+## Heads-up for forks
+
+This repo is **opinionated for VU2CPL's specific shack** — it hard-codes:
+
+- MQTT broker at `192.168.1.169:1883`, plain, no auth, LAN-only.
+- Captive-portal AP `vu2cpl-as3935-setup` / `vu2cpl1234` for first
+  WiFi setup (5-min window after factory reset).
+- IST timezone for ISO timestamps (`configTzTime("IST-5:30", …)`).
+- The existing Node-RED broker config ID `f4785be9863eab08`
+  from `vu2cpl-shack/flows.json`.
+
+If you're forking this for your own station, edit `src/main.cpp`
+constants near the top (`MQTT_HOST`, `WIFI_AP_SSID`, `WIFI_AP_PASS`)
+and re-point the Node-RED broker in [`nodered/build-flow.py`](nodered/build-flow.py)
+before rebuilding the flow JSON. The captive-portal password is
+intentionally simple because the AP is only up briefly during
+on-site setup — change it if your install is somewhere physically
+accessible to strangers.
+
+---
+
 ## Why this exists
 
 The AS3935 sensor at VU2CPL was previously wired via I²C + IRQ on
