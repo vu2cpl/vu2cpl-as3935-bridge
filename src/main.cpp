@@ -18,6 +18,7 @@
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <esp_log.h>
 #include <time.h>
 
 // ── Broker / portal ──────────────────────────────────────────────────────
@@ -628,6 +629,10 @@ void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.printf("\n[boot] vu2cpl-as3935-bridge %s\n", FIRMWARE_VERSION);
+
+    // Suppress the WiFi driver's chatty warnings (CCMP-replay,
+    // AUTH_FAIL retries, etc.). Real errors (E level) still print.
+    esp_log_level_set("wifi", ESP_LOG_ERROR);
 
     loadTunables();
     Serial.printf("[nvs] nf=%u wdth=%u srej=%u tun_cap=%u mask=%d "
