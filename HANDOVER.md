@@ -123,4 +123,94 @@ function (id `0a664ba977970e17`).
 
 ---
 
+## 2026-05-12 — v0.2.0 shipped: cmd channel, NVS persistence, TUN_CAP sweep
+
+### What landed
+
+The firmware grew a runtime control surface so the indoor / outdoor
+gain decision (and every other AS3935 tunable) can be flipped without
+a re-flash. Builds on v0.1.1's bench bring-up.
+
+**New MQTT topics:**
+
+| Topic                            | Direction | Notes |
+|----------------------------------|-----------|-------|
+| `lightning/as3935/cmd`           | Node-RED → ESP32 | JSON command in. Single-message dispatch — no batching. |
+| `lightning/as3935/cmd/ack`       | ESP32 → Node-RED | Per-message ack. Not retained — failure detail (`error` field) only useful in the moment. |
+| `lightning/as3935/status`        | ESP32 → Node-RED | Existing topic; v0.2.0 now republishes it after every successful `set`/`action` so subscribers see fresh state immediately. |
+
+**Command payload shapes:**
+
+```jsonc
+// Tunables — written through to AS3935 register, then to NVS
+{"set": "nf",                "value": 0..7}
+{"set": "wdth",              "value": 0..15}
+{"set": "srej",              "value": 0..15}
+{"set": "tun_cap",           "value": 0..15}
+{"set": "mask_dist",         "value": true|false}
+{"set": "min_num_lightning", "value": 1|5|9|16}     // datasheet-quantised
+{"set": "afe_gb",            "value": "indoor"|"outdoor"}  // string enum, not raw hex
+{"set": "modem_sleep",       "value": "max"|"min"}
+
+// Actions — side effects, no value
+{"action": "republish_status"}
+{"action": "calibrate_tun_cap"}   // ~35 s sweep, MQTT kept alive inside
+{"action": "reboot"}
+{"action": "factory_reset_wifi"}
+```
+
+**Ack shape:**
+
+```jsonc
+{"ok": true,  "cmd": "set:afe_gb", "ts": "2026-05-12T..."}
+{"ok": false, "cmd": "set:afe_gb", "error": "afe_gb must be 'indoor' or 'outdoor'", "ts": "..."}
+```
+
+Every `set` succeeds → ack + status republish, in that order. Every
+failed `set` → ack only (no register write, no NVS write, no status).
+
+### Decisions taken in v0.2.0
+
+| # | Decision | Reason |
+|---|----------|--------|
+| 11 | **NVS-backed tunables**, defaults in `struct Tunables tun` overridden by `Preferences` on boot | Settings survive reboot; deep-sleep iteration in the future doesn't need a different persistence layer |
+| 12 | **String enums on the wire** for `afe_gb` (`"indoor"`/`"outdoor"`) and `modem_sleep` (`"max"`/`"min"`) | Node-RED operators shouldn't need to know `AFE_GB = 0x0E` vs `0x12`; firmware translates to register bits |
+| 13 | **Range-validated**, per-key, in `handleSet` | A bad command publishes a descriptive ack failure rather than corrupting the chip's register |
+| 14 | **Republish retained `status` after every successful command** | UIs that just subscribe to `status` get the current state without needing to interpret acks |
+| 15 | **`cmd/ack` is NOT retained** | Late-attaching subscribers shouldn't see stale per-command success/failure of someone else's command; for "current persistent state," subscribe to `status` instead |
+| 16 | **TUN_CAP calibration is an `action`, not a tunable** | It's a procedure with a side-effecting result (whatever value won the sweep), not a value the operator sets directly. Result lands in `tun.tun_cap` + NVS, status republished |
+| 17 | **MQTT keepalive pumped inside the calibration loop** | The sweep takes ~35 s. Without `mqtt.loop()` calls in the sample wait, PubSubClient drops the connection on the broker's keepalive timeout, and the ESP32 reboots before publishing the result |
+| 18 | **Boot-time `loadTunables()` happens before `as3935Init()`** | `as3935Init()` reads `tun.*` to apply settings — wrong order would write the defaults to the chip and then silently desync from NVS until the next command |
+| 19 | **WiFi log level pinned to `ESP_LOG_ERROR`** | Chatty CCMP-replay / AUTH_FAIL info noise drowns out the genuinely interesting log lines |
+| 20 | **No-publish watchdog: 10 min without a successful publish → `ESP.restart()`** | Field-deploy failure mode: WiFi reconnects but MQTT silently doesn't. Restart is the only reliable recovery from "looks fine, isn't publishing" |
+| 21 | **MQTT fail counter: 60 × 5 s = 5 min of connect failures → `ESP.restart()`** | Bounded retry, avoid the "wedged forever" mode |
+
+### Open questions / for v0.3.0+
+
+| # | Question | Notes |
+|---|----------|-------|
+| E | Sleep-on-IRQ mode for battery operation | v0.1.0/0.2.0 keeps WiFi always-on. Once the sensor is on solar+18650 outdoors and `as3935-bridge` is the only thing running on the ESP32, `esp_sleep_enable_ext0_wakeup(PIN_AS3935_IRQ, HIGH)` lets the chip wake on real strikes. Power budget changes from ~150 mA average to ~5 mA. Needs a re-think of heartbeat cadence (don't wake just to publish "I'm fine"). |
+| F | OTA updates (Q-C from v0.1.0) | Still open. With NVS persistence settled, OTA is the next step — climbing on the roof to USB-flash a sealed box is the obvious motivation. ArduinoOTA on the same WiFi is the simplest path |
+| G | Whether to expose `noise_floor_raw` / per-event metadata on the status topic | Currently status carries human-friendly `nf`, `wdth`, `srej`. A diagnostic mode could also report `REG_CFG0/1/2` raw values for debugging |
+| H | Boot-button mapping during operation | Currently `BOOT` held 3 s → erase WiFi creds + portal. Could overload it to also trigger TUN_CAP calibration with a different hold duration (e.g. 5 s) so the box is field-recalibratable without MQTT |
+
+### Lessons learned during the v0.2.0 build
+
+- **`as3935Modify(reg, mask, bits)`** as a primitive turned out to be a force multiplier — every parameter writer is one line. Avoids the bug class of "I forgot to preserve the other bits in this byte."
+- **ArduinoJson v7 `JsonDocument`** (no template size) is the right call for variable-size payloads; the v6-style `StaticJsonDocument<N>` doesn't compose with optional fields.
+- **PubSubClient's 256-byte default buffer is too small** for the status payload (which has ~12 fields). `mqtt.setBufferSize(512)` fixes silent dropped publishes. The failure mode is `publish()` returning true but the broker seeing nothing — easy to miss.
+- **NVS namespace must be opened read-only when only reading** (`p.begin(NS, true)`) and read/write when writing (`p.begin(NS, false)`). Mixing causes silent write failures on the first commit after a fresh flash.
+- **First-ever NVS commit on a fresh namespace takes ~1 s longer than steady-state.** When a command path ends with `ESP.restart()` (the `reboot` action), the firmware needs `delay(1500)` after `publishAck` to let NVS flush before the restart hits.
+- **`calibrateTunCap()` must `detachInterrupt` the normal AS3935 ISR first** and re-attach at the end. Otherwise the high-rate LCO edges trigger `handleAs3935Event()` on every pulse and the I²C bus is hammered with status reads that compete with the calibration's own reads.
+
+### Source of truth (unchanged from v0.1.x)
+
+Node-RED Lightning Antenna Protector flow (`vu2cpl-shack` repo, tab id
+`75e2cac8ab96f556`) is the contract consumer. Any rename of
+`status` / `hb` / `event` keys breaks the dashboard — extend, don't
+rename. `cmd` / `cmd/ack` are new in v0.2.0 and only consumed by
+admin-side widgets, so additions there are safer.
+
+---
+
 *73 de VU2CPL*
