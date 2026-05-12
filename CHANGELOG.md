@@ -6,6 +6,35 @@ the `fw` field of every `lightning/as3935/status` MQTT payload.
 
 ---
 
+## Post-v0.2.0 bench refinements — 2026-05-12
+
+Small follow-ups validated on the bench after v0.2.0 was deployed.
+No firmware version bump — these are minor enough that bumping to
+v0.2.1 would be noisy.
+
+- **`esp_log_level_set("wifi", ESP_LOG_ERROR)`** in `setup()`.
+  Hides the ESP32 WiFi driver's W-level chatter — CCMP-replay
+  detections and the AUTH_FAIL / AUTH_EXPIRE retries during
+  WiFiManager-stored-creds reconnect. Real errors still print.
+- **Reboot delay bumped 500 ms → 1500 ms.** Discovered when the
+  first-ever NVS commit after a fresh partition couldn't finish
+  before `ESP.restart()` fired (test: set a tunable from default,
+  reboot, observe the default get reloaded). Once the namespace
+  exists, subsequent commits finish well under 500 ms — but the
+  extra second is cheap insurance against full-flash-erase edge
+  cases.
+- **Node-RED tuning dashboard** added in
+  [`nodered/as3935-control-flow.json`](nodered/as3935-control-flow.json).
+  Single `ui_template` styled to match the existing Master
+  Dashboard (GitHub-dark palette, vanilla DOM, LED indicator,
+  rounded-card layout). Imports as a new flow into the shack's
+  Node-RED, drops into the **Shack Monitoring tools** tab as the
+  "AS3935 Tuning" group. Source HTML/CSS/JS is in
+  [`nodered/build-flow.py`](nodered/build-flow.py) — edit there,
+  re-run, re-import. See [`nodered/README.md`](nodered/README.md).
+
+---
+
 ## v0.2.0 — 2026-05-12
 
 Adds a full MQTT control surface for live tuning, on-device LC-tank
