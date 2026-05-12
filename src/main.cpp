@@ -507,11 +507,11 @@ void handleAction(const char* action) {
         publishStatus("ready");
     } else if (strcmp(action, "reboot") == 0) {
         publishAck(true, "action:reboot");
-        delay(500);
+        delay(1500);   // first-ever NVS commit on a fresh namespace needs time
         ESP.restart();
     } else if (strcmp(action, "factory_reset_wifi") == 0) {
         publishAck(true, "action:factory_reset_wifi");
-        delay(500);
+        delay(1500);
         WiFiManager wm;
         wm.resetSettings();
         ESP.restart();
