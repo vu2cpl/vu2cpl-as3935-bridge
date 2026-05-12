@@ -74,7 +74,7 @@ matching the Python daemon. The ESP32 SNTP-syncs at boot.
 
 | Item | Detail |
 |------|--------|
-| MCU | ESP-WROOM-32 (NodeMCU dev board) |
+| MCU | ESP-WROOM-32 (NodeMCU dev board) — minimum 4 MB flash. ESP32-S2/S3/C3/C6 also work in principle; see [BUILD.md § Compatible ESP32 variants](BUILD.md#compatible-esp32-variants). ESP8266 and ESP32-H2 are not supported. |
 | Sensor | AS3935 lightning detector (I²C variant) |
 | Battery | 18650 Li-ion (3000 mAh) |
 | Charger | TP4056 (Li-ion, 5 V solar input, BMS-equipped variant recommended) |

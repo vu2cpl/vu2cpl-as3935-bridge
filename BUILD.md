@@ -74,6 +74,41 @@ See [WIRING.md](WIRING.md) for the full picture, wire-by-wire table,
 and silkscreen-label gotchas (the AS3935 module labels the I²C pins
 **`D`** for SDA and **`C`** for SCL).
 
+### Compatible ESP32 variants
+
+The bench is built on a vanilla **ESP-WROOM-32 NodeMCU dev board**
+and that's what every doc here is validated against. The firmware
+itself only needs these minimums:
+
+| Requirement | Min | Why |
+|---|---|---|
+| Chip family | ESP32, S2, S3, C3, or C6 | WiFi 2.4 GHz + Arduino-ESP32 framework |
+| Flash | **4 MB** | Firmware is ~937 KB; default partition table needs a 1.3 MB app slot |
+| SRAM | 320 KB | Firmware uses ~48 KB; every ESP32 chip has ≥ 320 KB |
+| Free GPIOs | 3 + BOOT | I²C SDA + SCL + AS3935 IRQ; BOOT for factory-reset |
+| RTC-capable pin for IRQ | yes | Reserved for future deep-sleep EXT0 wake. Current GPIO27 is RTC-capable on all ESP32 variants |
+| USB-serial chip | CH340 / CP210x / FTDI / native USB-OTG | First-flash + serial monitor |
+| 3.3 V LDO onboard | yes | To power AS3935 from VIN |
+
+Not required: Bluetooth, PSRAM, dual core, display, USB-OTG host.
+
+**Recommended**: stick with ESP-WROOM-32 / NodeMCU-32. ~₹250-400 in
+India, CH340 plug-and-play on macOS 13+, plenty of flash headroom
+for future OTA.
+
+**Possible alternatives** (untested — try at your own bench):
+- **ESP32-C3-DevKitM-1**: cheaper, smaller, RISC-V. Pin map differs
+  (no GPIO21/22 by default) — would need `PIN_I2C_SDA` / `PIN_I2C_SCL`
+  remapped in `main.cpp`. Lower idle current than ESP32 classic, so a
+  good candidate for v0.3 deep-sleep work.
+- **ESP32-S3**: more GPIOs, native USB, fine but no real advantage
+  for this project.
+
+**Explicitly NOT supported**:
+- **ESP8266** — different SDK (no `Preferences`, no EXT0 wake, no
+  GPIO27), weaker WiFi. HANDOVER decision #1 ruled it out.
+- **ESP32-H2** — no WiFi (Thread/BLE only), so no MQTT.
+
 ---
 
 ## Stage 2 — Wiring
