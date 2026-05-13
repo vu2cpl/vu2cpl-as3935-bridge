@@ -20,28 +20,68 @@ you need (re-calibration, re-flash, etc.).
 
 ## Stage 0 — Prerequisites
 
-A macOS or Linux machine with:
+A macOS or Linux (Raspberry Pi OS / Debian / Ubuntu) machine with:
 
 - **Python 3.9+** — already on macOS via Homebrew (`brew install python`) or built-in on most Linuxes.
 - **PlatformIO CLI**:
+  - **macOS**: `pip3 install -U platformio`
+  - **Pi / Linux (Bullseye and earlier)**: `pip3 install --user -U platformio`
+  - **Pi / Linux (Bookworm and later)**: PEP 668 marks system Python as
+    externally-managed; pick one of:
+    ```sh
+    # Option A — quick:
+    pip3 install -U --break-system-packages --user platformio
+
+    # Option B — cleaner:
+    sudo apt install pipx
+    pipx ensurepath
+    pipx install platformio
+    ```
+  Installs land in `/opt/homebrew/bin/pio` (macOS) or `~/.local/bin/pio`
+  (Linux / pipx). Linux installs: ensure `~/.local/bin` is in `PATH`:
   ```sh
-  pip3 install -U platformio
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+  source ~/.bashrc
   ```
-  Installs `pio` and `platformio` into `/opt/homebrew/bin` (macOS) or
-  `~/.local/bin` (Linux). First `pio run` will download the ESP32
-  toolchain (~500 MB) — give it a couple of minutes.
+  First `pio run` will download the ESP32 toolchain (~500 MB) — give it
+  a couple of minutes.
+
+- **`dialout` group membership (Linux only)** — required to access
+  `/dev/ttyUSB*` and `/dev/ttyACM*`:
+  ```sh
+  sudo usermod -aG dialout $USER
+  # log out and back in for the change to apply
+  ```
+  Without this, `pio run -t upload` fails with `Permission denied`.
+
 - **A data-capable USB cable** for the ESP32 dev board. A surprising
   number of "USB cables" are power-only; if the board doesn't appear
-  on a `ls /dev/cu.usb*` after plugging in, try a different cable
-  before suspecting anything else.
+  on `ls /dev/cu.usb*` (Mac) or `ls /dev/ttyUSB*` (Pi/Linux) after
+  plugging in, try a different cable before suspecting anything else.
+
 - **macOS CH340 driver** — most NodeMCU-32 dev boards ship with a CH340
   USB-serial chip. macOS 13 (Ventura) and later include the driver in
   the kernel — no install needed. Older macOS may need
   [WCH's macOS CH340 driver](https://www.wch.cn/downloads/CH341SER_MAC_ZIP.html).
   After plugging in the ESP32, you should see `/dev/cu.usbserial-XXXX`
   appear within ~2 s.
-- **A way to flash the broker** (`mosquitto-clients` for the test
-  commands): `brew install mosquitto` on macOS, `apt install mosquitto-clients` on Debian/Ubuntu/Raspberry Pi OS.
+
+  Pi / Linux CH340 / CP210x / FTDI drivers are all built into the
+  kernel — no install needed. Port shows up as `/dev/ttyUSB0` (or
+  higher).
+
+- **mosquitto-clients** (for the test commands):
+  ```sh
+  brew install mosquitto              # macOS
+  sudo apt install mosquitto-clients  # Pi / Debian / Ubuntu
+  ```
+
+> **Quick path**: the bundled [`install.py`](install.py) handles
+> PlatformIO installation (including the Bookworm PEP 668 work-around),
+> auto-detects your platform, checks `dialout` group membership on
+> Linux, and walks you through the rest of the configuration. Run
+> `python3 install.py` from the repo root after `git clone`. See
+> [Stage 3](#stage-3--firmware-build--flash).
 
 > **If your Mac already has FTDI radio CAT cables connected**, the
 > ESP32 will *not* be the only `/dev/cu.usbserial-*` device on the
