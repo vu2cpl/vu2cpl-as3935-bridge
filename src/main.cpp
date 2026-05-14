@@ -38,11 +38,12 @@ constexpr int PIN_BOOT_BUTTON = 0;
 constexpr uint32_t BOOT_HOLD_MS = 3000;
 
 // ── MQTT topics ──────────────────────────────────────────────────────────
-constexpr const char* TOPIC_EVENT  = "lightning/as3935";
-constexpr const char* TOPIC_STATUS = "lightning/as3935/status";
-constexpr const char* TOPIC_HB     = "lightning/as3935/hb";
-constexpr const char* TOPIC_CMD    = "lightning/as3935/cmd";
-constexpr const char* TOPIC_ACK    = "lightning/as3935/cmd/ack";
+constexpr const char* TOPIC_EVENT      = "lightning/as3935";
+constexpr const char* TOPIC_STATUS     = "lightning/as3935/status";
+constexpr const char* TOPIC_HB         = "lightning/as3935/hb";
+constexpr const char* TOPIC_CMD        = "lightning/as3935/cmd";
+constexpr const char* TOPIC_ACK        = "lightning/as3935/cmd/ack";
+constexpr const char* TOPIC_LAST_EVENT = "lightning/as3935/last_event";
 constexpr const char* CLIENT_ID    = "as3935-bridge";
 
 constexpr uint32_t HEARTBEAT_MS        = 30 * 1000;
@@ -311,6 +312,7 @@ void wifiWaitForReconnect() {
 void publishStatus(const char* event);
 void publishHeartbeat();
 void publishAck(bool ok, const char* what, const char* err = nullptr);
+void publishLastEvent(const char* event, uint8_t distance, uint32_t energy);
 void handleCmd(const char* payload, size_t length);
 
 void onMqttMessage(char* topic, uint8_t* payload, unsigned int length) {
@@ -406,6 +408,26 @@ void publishAck(bool ok, const char* what, const char* err) {
     Serial.printf("[mqtt] ack: %s\n", buf);
 }
 
+// Retained "last event" topic. Survives Node-RED restart so the
+// dashboard's LAST SEEN field can rehydrate within ~100 ms of subscribe
+// instead of waiting for the next live disturber / noise / lightning
+// strike. Distance and energy are only meaningful for lightning events;
+// for disturber/noise pass 0 (dashboard renders them as 0 if shown,
+// or '—' depending on the widget's null-check).
+void publishLastEvent(const char* event, uint8_t distance, uint32_t energy) {
+    char ts[24]; isoNow(ts, sizeof(ts));
+    uint64_t ts_ms = (uint64_t)time(nullptr) * 1000ULL;
+    char buf[224];
+    int n = snprintf(buf, sizeof(buf),
+        "{\"event\":\"%s\",\"distance\":%u,\"energy\":%lu,"
+        "\"timestamp\":\"%s\",\"ts_epoch_ms\":%llu}",
+        event, distance, (unsigned long)energy, ts,
+        (unsigned long long)ts_ms);
+    if (n > 0 && n < (int)sizeof(buf)) {
+        mqtt.publish(TOPIC_LAST_EVENT, (const uint8_t*)buf, n, true);
+    }
+}
+
 // ── Event handler ────────────────────────────────────────────────────────
 void handleAs3935Event() {
     delay(3);  // datasheet ≥2 ms after IRQ before reading 0x03
@@ -425,6 +447,7 @@ void handleAs3935Event() {
             "\"timestamp\":\"%s\"}",
             distance, (unsigned long)energy, ts);
         mqtt.publish(TOPIC_EVENT, buf);
+        publishLastEvent("lightning", distance, energy);
         Serial.printf("[as3935] ⚡ lightning d=%ukm e=%lu\n",
                       distance, (unsigned long)energy);
     } else if (intReg == INT_DISTURBER) {
@@ -432,12 +455,14 @@ void handleAs3935Event() {
         snprintf(buf, sizeof(buf),
             "{\"event\":\"disturber\",\"timestamp\":\"%s\"}", ts);
         mqtt.publish(TOPIC_EVENT, buf);
+        publishLastEvent("disturber", 0, 0);
         Serial.println("[as3935] ⚠ disturber");
     } else if (intReg == INT_NOISE) {
         counters.noise++;
         snprintf(buf, sizeof(buf),
             "{\"event\":\"noise\",\"timestamp\":\"%s\"}", ts);
         mqtt.publish(TOPIC_EVENT, buf);
+        publishLastEvent("noise", 0, 0);
         Serial.println("[as3935] 📡 noise");
     } else {
         Serial.printf("[as3935] spurious IRQ, INT=0x%X\n", intReg);

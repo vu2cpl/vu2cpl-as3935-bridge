@@ -6,6 +6,47 @@ the `fw` field of every `lightning/as3935/status` MQTT payload.
 
 ---
 
+## Post-v0.2.0 — retained `last_event` topic for dashboard rehydration — 2026-05-14
+
+New retained MQTT topic so the shack's Node-RED Master Dashboard can
+show a correct "LAST SEEN" age on Node-RED restart without waiting
+for the next live AS3935 event.
+
+- New constant `TOPIC_LAST_EVENT = "lightning/as3935/last_event"`.
+- New helper `publishLastEvent(event, distance, energy)` — emits
+  `{event, distance, energy, timestamp, ts_epoch_ms}` with
+  `retain=true`. `ts_epoch_ms = time(nullptr) * 1000` (the device's
+  NTP-synced wall clock at publish time, in milliseconds since
+  epoch — chosen instead of bridge `millis()` because the dashboard
+  needs a stable reference point that survives ESP32 reboot too,
+  and `time(nullptr)` already drives the existing ISO `ts` field).
+- Three new call sites in `handleAS3935Irq()`: one after each of the
+  existing `mqtt.publish(TOPIC_EVENT, …)` calls for lightning,
+  disturber, and noise. Same `event` string, same distance/energy
+  for lightning, `0/0` for disturber and noise (the chip's
+  distance/energy registers for non-lightning events aren't
+  physically meaningful; dashboard treats them accordingly).
+
+**Why retained.** Broker stores the latest payload per topic when
+`retain=true`. Any subscriber connecting after publication gets the
+payload immediately on subscribe — so on Node-RED restart, the
+shack dashboard's Master Dashboard re-paints LAST SEEN within
+~100 ms instead of staying blank until the next disturber.
+
+**Sequencing.** The shack repo (`vu2cpl-shack`) ships the consuming
+mqtt-in + dashboard handler in commit `f75e147`. That side is a
+silent subscriber until this firmware is flashed; this firmware
+side is harmless until the shack side is deployed. Either order
+works, both already on `origin/main`.
+
+**Build / flash.** Verified to compile on this Mac (PlatformIO 6,
+ESP32-WROOM-32). Flash with `./flash.sh` over USB to the live
+bridge ESP32. Status topic's `fw` field still reads `v0.2.0` after
+flash — no version bump for this addition, same rationale as the
+2026-05-12 bench-refinements set above.
+
+---
+
 ## Post-v0.2.0 bench refinements — 2026-05-12
 
 Small follow-ups validated on the bench after v0.2.0 was deployed.

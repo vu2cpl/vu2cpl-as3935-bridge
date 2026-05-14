@@ -66,6 +66,7 @@ Antenna Protector flow needs **zero changes**:
 | `lightning/as3935/hb` | publish (retained) | `{alive:true, ts, uptime_s, rssi, counters:{lightning, disturber, noise, irq}}` every 30 s. |
 | `lightning/as3935/cmd` | **subscribe** | `{"set":"<key>","value":<v>}` or `{"action":"<name>"}` — live tuning. See [`nodered/README.md`](nodered/README.md). |
 | `lightning/as3935/cmd/ack` | publish | `{ok, cmd, error?, ts}` for every received command. |
+| `lightning/as3935/last_event` | publish (retained) | `{event, distance, energy, timestamp, ts_epoch_ms}` — most recent disturber/noise/lightning event. Retained so the shack dashboard's "LAST SEEN" survives Node-RED restart. `ts_epoch_ms` is `time(nullptr) * 1000` (ms since epoch). `distance`/`energy` are `0` for disturber/noise (non-lightning events don't have physically meaningful values). |
 
 `ts` / `timestamp` are local-IST ISO 8601 strings (`YYYY-MM-DDTHH:MM:SS`),
 matching the Python daemon. The ESP32 SNTP-syncs at boot.
