@@ -1,9 +1,12 @@
 # Node-RED control + dashboard for the AS3935 bridge
 
-Live tuning + status panel for the ESP32 lightning bridge. Two paths:
+Live tuning + events + test injects for the ESP32 lightning bridge.
+Two paths:
 
 1. **Importable flow** (recommended): `as3935-control-flow.json` —
-   one `ui_template` + 3 `mqtt in` + 1 `mqtt out`. Matches the
+   **two `ui_template` panels** (Tuning + Events), 5 `mqtt in`, 4
+   cache function nodes, a 5s replay tick that feeds two replay
+   functions, 5 TEST inject buttons, 2 `mqtt out`. Matches the
    existing dashboard's GitHub-dark palette (#0d1117 / #161b22 /
    #238636 / #f85149 / etc.), references the existing
    `f4785be9863eab08` MQTT broker config, drops itself into the
@@ -24,22 +27,74 @@ On `noderedpi4`:
    `as3935-control-flow.json`. Choose **import to new flow**.
 4. Click **Deploy**.
 
-The new dashboard panel appears at **Shack Monitoring tools >
-AS3935 Tuning** with:
+After deploy, two dashboard groups appear under the **Shack
+Monitoring tools** tab.
+
+### Group 1 — AS3935 Tuning
 
 - **Status header** — colour-coded LED, FW / IP / RSSI / uptime.
 - **Counters strip** — `⚡ N · ⚠ N · 📡 N · IRQ N`.
-- **Calib line** — `TRCO=OK SRCO=OK afe_gb=outdoor`.
+- **Calib line** — `TRCO=OK · SRCO=OK`.
 - **Tunables block** — NF, WDTH, SREJ, TUN_CAP with `−` / `+` nudge
-  buttons; Mask-dist toggle; Min-strikes and Modem-sleep dropdowns.
+  buttons; Mask-dist toggle; AFE GB toggle (indoor/outdoor — chip
+  goes green when outdoor, amber when indoor); Min-strikes and
+  Modem-sleep dropdowns.
 - **Actions block** — Calibrate TUN_CAP (~35 s), Republish, Reboot,
   Factory Reset WiFi (the destructive two require a confirm dialog).
 - **Ack footer** — last command result, green tick / red cross.
+
+The three MQTT in nodes fan through `Cache /status` · `Cache /hb` ·
+`Cache /cmd_ack` function nodes that stash each payload in flow
+context, and a 5-second `Replay every 5s` inject re-emits the cached
+values to the panel. **Worst-case rehydration after opening the
+dashboard cold is 5 s** — no need to hit *Republish Status* on the
+ESP32 when you open a fresh tab. The replay path is a workaround for
+`ui_control` being absent from `node-red-dashboard 3.6.6`.
 
 Every nudge / toggle / dropdown change publishes a single
 `{"set":"<key>","value":...}` payload to `lightning/as3935/cmd`. The
 ESP32 acks on `.../cmd/ack` and re-publishes status — the panel
 re-renders within ~100 ms.
+
+### Group 2 — AS3935 Events
+
+A second panel directly below Tuning shows live strike / disturber /
+noise traffic from the chip:
+
+- **Last Event card** — large icon (⚡ / ⚠ / 📡), event summary in
+  red / amber / muted, ISO timestamp + a live `Xs ago` counter
+  (updated 1 Hz client-side). Backed by the retained
+  `lightning/as3935/last_event` topic, so it **survives Node-RED
+  restart and browser refresh** with at-most-5 s rehydration delay.
+- **Session counters** — `⚡ N · ⚠ N · 📡 N`, reset when the
+  browser tab opens. Reflects what *this* tab has seen.
+- **Recent events log** — newest-first, capped at 30 rows; for
+  lightning rows shows distance (or `out of range` / `overhead`) and
+  raw `energy=`. Session-scoped — refreshing the browser clears it.
+
+Live events arrive via `mqtt in lightning/as3935`. The retained
+last_event flows `mqtt in → Cache /last_event → panel`, and a
+`Replay last_event (5s tick)` function shares the same 5 s tick as
+the Tuning panel — both panels rehydrate together.
+
+### TEST inject buttons (no ESP32 required)
+
+The flow ships **five inject nodes** wired to an `mqtt out
+lightning/as3935`. Pressing any of them publishes a single fake
+event that the Events panel renders exactly as a real one:
+
+| Button | Payload |
+|--------|---------|
+| `TEST · ⚡ lightning @ 5 km` | `{"event":"lightning","distance":5,"energy":850000,"timestamp":"TEST"}` |
+| `TEST · ⚡ lightning @ 25 km` | `{"event":"lightning","distance":25,"energy":120000,...}` |
+| `TEST · ⚡ lightning out-of-range` | `{"event":"lightning","distance":63,...}` (chip sentinel) |
+| `TEST · ⚠ disturber` | `{"event":"disturber","timestamp":"TEST"}` |
+| `TEST · 📡 noise` | `{"event":"noise","timestamp":"TEST"}` |
+
+These do **not** touch the bridge or its retained last_event — they
+only exercise the Events panel's live `lightning/as3935`
+subscription. To also exercise the retained-rehydration path, use
+the `mosquitto_pub` recipe in the test plan below.
 
 > **Broker reference.** The flow references the existing
 > `f4785be9863eab08` broker config ("Tasmota MQTT Broker",
@@ -66,9 +121,108 @@ or hot-reload in Node-RED to see the change.
 
 The shack's main dashboard tab already has a **Lightning
 Protection** group with the read-only `Master Dashboard` template
-that shows live strikes. **That stays untouched** — this new panel
-is a separate tuning UI on the Monitoring tools tab so the main
-operational dashboard isn't cluttered with maintenance controls.
+that shows live strikes. **That stays untouched** — this new flow
+is a separate tuning + events UI on the Monitoring tools tab so the
+main operational dashboard isn't cluttered with maintenance controls.
+
+---
+
+## Comprehensive test plan
+
+Walks through every code path in the flow without needing a live
+storm. Estimated time: ~10 minutes. Assumes the bridge ESP32 is
+powered, on Wi-Fi, and publishing to the same MQTT broker that
+Node-RED talks to.
+
+Set up two extra terminals on `noderedpi4` (or any host that can
+reach the broker):
+
+```sh
+# Terminal A — watch every AS3935 topic
+mosquitto_sub -h 192.168.1.169 -t 'lightning/as3935/#' -v
+
+# Terminal B — for the mosquitto_pub one-liners below
+H=192.168.1.169
+```
+
+Open the dashboard at `http://noderedpi4:1880/ui` and navigate to
+**Shack Monitoring tools**. You should see both groups (Tuning above,
+Events below).
+
+### Phase 1 — Tuning panel sanity
+
+| # | Action | Pass criterion |
+|---|--------|----------------|
+| 1.1 | **Open the dashboard cold** (close all tabs, reopen). | Within 5 s, Tuning panel populates: LED green/amber (not grey), FW + IP + RSSI shown, counter strip non-zero, calib `TRCO=OK · SRCO=OK`. *Validates the cache + replay rehydration path.* |
+| 1.2 | Click `NF` **`+`** once. | Within ~200 ms: ack footer shows `✓ set:nf @ HH:MM:SS` in green, `NF` value increments. Terminal A shows one `lightning/as3935/cmd` and one `cmd/ack`. |
+| 1.3 | Click `NF` **`−`** to restore. | Symmetric, value returns to start. |
+| 1.4 | Click `Mask dist` **toggle**. | Value flips `OFF` ↔ `ON`, ack green. |
+| 1.5 | Click `AFE GB` **toggle**. | Chip flips `INDOOR` (amber) ↔ `OUTDOOR` (green). Ack green. |
+| 1.6 | Pick **Min strikes = 9** from dropdown. | Ack green, value persists across browser refresh (NVS-backed on the ESP32). |
+| 1.7 | Click **Republish Status**. | Ack green, all status fields visibly re-render at ~the same instant. |
+| 1.8 | **Out-of-range guard**: push `NF +` repeatedly. | At `NF=7` the next `+` should *not* publish anything (the panel's `nudge` guard kicks in before MQTT). Terminal A confirms no extra cmd. |
+| 1.9 | **Confirm dialog**: click **Reboot ESP32**, **Cancel** in the popup. | No cmd published. Re-click and **OK** — cmd flies, panel goes amber/grey for ~10 s while ESP32 reboots, then comes back green. |
+
+### Phase 2 — Events panel via TEST injects
+
+In the Node-RED editor (not the dashboard), open the **AS3935 Bridge** tab.
+The five TEST inject nodes have arrow buttons on their left edge — that's
+how you fire them.
+
+| # | Action | Pass criterion |
+|---|--------|----------------|
+| 2.1 | Click ▶ on `TEST · ⚡ lightning @ 5 km`. | Events panel: Last Event card flips to red `⚡ Lightning · 5 km · energy 850000`. Counter `⚡` → 1. New row appears at the top of Recent events. |
+| 2.2 | Click ▶ on `TEST · ⚡ lightning @ 25 km`. | Last Event updates, `⚡` counter → 2, second row prepended. |
+| 2.3 | Click ▶ on `TEST · ⚡ lightning out-of-range`. | Distance renders as `out of range` (chip sentinel 63 handled), counter → 3. |
+| 2.4 | Click ▶ on `TEST · ⚠ disturber`. | Last Event card flips amber, `⚠` counter → 1. |
+| 2.5 | Click ▶ on `TEST · 📡 noise`. | Last Event card flips muted-grey, `📡` counter → 1. |
+| 2.6 | Click `TEST · ⚡ lightning @ 5 km` **10 times in a row**. | Recent events log grows to 10 rows; counters update each press; no flicker, no lag. |
+| 2.7 | Refresh the **dashboard** (not the editor). | Session counters reset to 0, Recent events clears — **but the Last Event card stays populated**. *Confirms it's reading the retained topic, not the live stream.* |
+
+### Phase 3 — Retained `last_event` rehydration
+
+This is the path that survives Node-RED restart. The TEST injects do
+**not** populate the retained topic; we have to publish it manually.
+
+```sh
+# Pretend the bridge just saw a 3 km strike — set the retained marker.
+mosquitto_pub -h $H -t lightning/as3935/last_event -r -m '{
+  "event":"lightning","distance":3,"energy":1234567,
+  "timestamp":"2026-05-15T10:00:00","ts_epoch_ms":1747303200000
+}'
+```
+
+| # | Action | Pass criterion |
+|---|--------|----------------|
+| 3.1 | Run the `mosquitto_pub -r` above. | Within 5 s, Events panel Last Event card flips to red `⚡ Lightning · 3 km · energy 1234567`. *(Retained delivery on subscribe via `rap: true` — almost instant in practice.)* |
+| 3.2 | Refresh the dashboard. | Last Event card **re-populates within 5 s** of the page rendering. *Validates `Cache /last_event` + `Replay last_event (5s tick)`.* |
+| 3.3 | In the Node-RED editor, **Stop / Start** the AS3935 Bridge tab (top-right menu → Disable then Enable). | After re-enable, Last Event card re-populates within 5 s without anyone touching the bridge. *Validates retained delivery on Node-RED's MQTT (re)subscribe.* |
+| 3.4 | Clear the retained marker: `mosquitto_pub -h $H -t lightning/as3935/last_event -r -n` (`-n` = empty/null payload). | Card stays showing the prior value — the panel doesn't clear on a null retained delete (by design). A real `lightning/as3935/last_event` from the bridge will overwrite it. |
+
+### Phase 4 — End-to-end with the live ESP32
+
+Cover the bridge antenna or rub a piezo lighter near it to trigger
+real interrupts.
+
+| # | Action | Pass criterion |
+|---|--------|----------------|
+| 4.1 | Wait for a real `disturber` IRQ (very common with man-made noise). | Terminal A: `lightning/as3935  {"event":"disturber",...}` plus a retained `.../last_event` and an updated `.../hb` (counters.disturber++). Events panel: Last Event card amber. |
+| 4.2 | Watch `.../hb` ticks. | One every ~10 s; `counters.irq` strictly non-decreasing; uptime monotonic. Tuning panel counter strip updates. |
+| 4.3 | **Power-cycle the ESP32**. | Tuning panel LED → red, then back to green ~15 s after reboot. NVS-persisted tunables (NF, WDTH, AFE GB, etc.) survive the cycle. The retained `last_event` from before the reboot is still shown on the Events panel — that's the whole point of `r=true` on the bridge side. |
+
+### Phase 5 — Regression smoke
+
+After any panel edit + `python3 nodered/build-flow.py` + re-import:
+
+- [ ] Both panels render without console errors (Cmd-Option-J in the
+      browser, Console tab — should be silent).
+- [ ] Replay tick status node in the Node-RED editor shows
+      `replay tick · 3 msg(s)` (Tuning side) and `replay · last_event`
+      (Events side) green-dot every 5 s.
+- [ ] All five TEST inject nodes still fire (single-message publish
+      per click).
+- [ ] No orphan wires (the build script JSON-validates; missing IDs
+      will surface as red bars in the Node-RED editor at import time).
 
 ---
 
@@ -81,6 +235,7 @@ operational dashboard isn't cluttered with maintenance controls.
 | `lightning/as3935/status` | ESP32 → subscribe (retained) | Full state |
 | `lightning/as3935/hb` | ESP32 → subscribe (retained) | uptime + counters |
 | `lightning/as3935` | ESP32 → subscribe | lightning/disturber/noise events |
+| `lightning/as3935/last_event` | ESP32 → subscribe (retained) | Latest event with `ts_epoch_ms` — backs the Events panel's Last Event card across restart |
 
 ---
 

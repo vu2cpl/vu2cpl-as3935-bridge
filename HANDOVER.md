@@ -17,7 +17,7 @@ post-install re-tune. WiFi modem sleep enabled by default
 (10 min) → `ESP.restart()`. See [`CHANGELOG.md`](CHANGELOG.md).
 
 The Node-RED **AS3935 Control Panel** is live on `noderedpi4` since
-2026-05-12 — a single `ui_template` (group `as3935_ctl_grp`, flow tab
+2026-05-12 — a `ui_template` (group `as3935_ctl_grp`, flow tab
 `fe70cfdcdfa19aa4` in vu2cpl-shack) wired to one mqtt-out for cmds and
 three mqtt-ins for status / hb / ack. Provides NF / WDTH / SREJ /
 TUN_CAP / Mask dist / AFE GB / Min strikes / Modem sleep knobs and the
@@ -25,6 +25,20 @@ four actions. Styled to the GitHub-dark palette used by the rest of the
 shack dashboard. Source HTML/CSS/JS in
 [`nodered/build-flow.py`](nodered/build-flow.py); generated flow JSON
 in [`nodered/as3935-control-flow.json`](nodered/as3935-control-flow.json).
+
+The example flow now ships a **second panel** — the **AS3935 Events
+Panel** (group `as3935_evt_grp`) — alongside Tuning. Subscribes to
+`lightning/as3935` (live stream) and `lightning/as3935/last_event`
+(retained, so the Last Event card survives Node-RED + browser
+refresh, rehydrates within 5 s via the same cache-and-replay tick as
+Tuning). Card colour-codes by event type (⚡ red / ⚠ amber /
+📡 muted), shows session counters, and a 30-row rolling event log.
+**Five TEST inject buttons** in the flow publish fake
+`lightning/as3935` events so the panel can be exercised end-to-end
+without the ESP32. The bridge's `nodered/README.md` includes a 5-phase
+comprehensive test plan (Tuning sanity → Events via TEST injects →
+retained-rehydration via `mosquitto_pub -r` → live ESP32 → regression
+smoke).
 
 **Downstream consumer:** [`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack)'s
 `Trigger Disconnect` (also rebuilt 2026-05-12) now uses this bridge's
@@ -270,6 +284,107 @@ Node-RED Lightning Antenna Protector flow (`vu2cpl-shack` repo, tab id
 `status` / `hb` / `event` keys breaks the dashboard — extend, don't
 rename. `cmd` / `cmd/ack` are new in v0.2.0 and only consumed by
 admin-side widgets, so additions there are safer.
+
+---
+
+## 2026-05-15 — example flow caught up to shack + comprehensive test plan
+
+No firmware change. Pure tooling under `nodered/` — the example flow
+that ships in this repo was lagging behind what's actually deployed
+on `noderedpi4`. Two waves of catch-up this session.
+
+### Wave 1 — Tuning panel parity with shack
+
+Five edits to bring the imported panel (`build-flow.py` →
+`as3935-control-flow.json`) up to what's live in
+`vu2cpl-shack/flows.json`:
+
+- **AFE GB tunable row** added to the panel with its own toggle —
+  chip goes green on `outdoor`, amber on `indoor`. Previously AFE GB
+  was only readable from the Calib line.
+- **Calib line drops the `afe_gb=…` segment** since AFE GB now has
+  its own row.
+- **`.meta` colour brightened** from `--muted` (#8b949e) to
+  `--text` (#c9d1d9) for legibility.
+- **JS IIFE switched to Pattern B** `(function(scope){…})(scope)`
+  matching the chrony card — explicit `scope` parameter instead of
+  relying on closure capture from the surrounding controller. The
+  closure-capture form worked but the parameter form is the pattern
+  used elsewhere in the shack dashboard.
+- **`a35.toggleAfe()` method** wired to the new AFE GB toggle
+  button.
+
+Plus the **cache-and-replay rehydration pattern** the shack ships:
+three `Cache /status` · `Cache /hb` · `Cache /cmd_ack` function
+nodes stash MQTT payloads in flow context, a 5-second
+`Replay every 5s` inject re-emits them with `msg.topic` preserved.
+Worst-case rehydration after opening the dashboard cold is now 5 s
+without needing to hit *Republish Status* on the ESP32. The replay
+path is the workaround for `ui_control` being absent from
+`node-red-dashboard 3.6.6` (confirmed by `--force` reinstall, files
+genuinely missing).
+
+### Wave 2 — Events panel + 5-phase test plan
+
+A second `ui_template` (group `as3935_evt_grp`, sibling to the
+Tuning group on tab id `bcce4e07ac31b882`):
+
+- **Last Event card** — large icon, colour-coded summary
+  (red / amber / muted), ISO timestamp + live `Xs ago` (1 Hz
+  client-side tick). Backed by retained
+  `lightning/as3935/last_event` (the topic added in commit
+  `f895d71`), so it **survives Node-RED + browser refresh** with
+  ≤5 s rehydration via a new `Cache /last_event` +
+  `Replay last_event (5s tick)` pair that shares the same replay
+  tick as the Tuning panel.
+- **Session counters** — `⚡/⚶/📡` per-tab tallies (browser-session
+  scoped, intentionally not persisted).
+- **Recent events log** — newest-first, capped at 30, with
+  distance (incl. `out of range` for the chip's sentinel
+  `distance=63` and `overhead` for `distance=0`) and raw energy on
+  lightning rows.
+
+Plus **five TEST inject buttons** wired to a single
+`TEST publish → lightning/as3935` mqtt out: `⚡ @ 5 km`,
+`⚡ @ 25 km`, `⚡ OOR (distance=63)`, `⚠ disturber`, `📡 noise`.
+Each press publishes one fake event so the Events panel can be
+exercised without the ESP32.
+
+`nodered/README.md` now carries a **5-phase comprehensive test
+plan** (~10 min total): Tuning sanity → Events via TEST injects →
+retained-rehydration via `mosquitto_pub -r` (with the exact
+one-liner) → live ESP32 end-to-end → regression smoke checklist.
+
+### Why this matters (and why now)
+
+The example flow in this repo is what downstream consumers
+*import* — it should mirror what's actually running, otherwise
+people who clone the repo get an out-of-date starter. The shack
+flow had drifted ahead during the 2026-05-13/14/15 dashboard
+work (commits `45d4e17`, `b2aa5d2`, `6dab37f`, `f75e147`,
+`027e3b4`) and this catches the example back up to the same
+codebase.
+
+### Open
+
+- The Open-Meteo CAPE integration, antenna-disconnect matrix,
+  threshold logic, JSONL persistence (Pi-side filesystem with
+  hardcoded paths), and bypass handler from the shack flow are
+  **not** ported into the example — they're shack-specific policy /
+  hardware control, not bridge-level concerns. A clone of this repo
+  building its own dashboard shouldn't inherit them.
+- The rolling event log in the Events panel is intentionally
+  session-only (browser refresh clears it). If a future consumer
+  wants persistent history they can either (a) copy the JSONL
+  pattern from `vu2cpl-shack/flows.json` or (b) point Node-RED at
+  an InfluxDB / similar — out of scope for the bridge example.
+
+### Source of truth
+
+The example flow source remains `nodered/build-flow.py`. JSON in
+`nodered/as3935-control-flow.json` is generated — never hand-edit.
+Run `python3 nodered/build-flow.py` to regenerate after any panel
+edit. Re-import or hot-reload in Node-RED to see the change.
 
 ---
 

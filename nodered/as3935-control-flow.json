@@ -2,9 +2,9 @@
   {
     "id": "as3935_ctl_flow",
     "type": "tab",
-    "label": "AS3935 Tuning",
+    "label": "AS3935 Bridge",
     "disabled": false,
-    "info": "MQTT control + live status panel for the vu2cpl-as3935-bridge ESP32.\n\nPublishes to lightning/as3935/cmd. Subscribes to status/hb/cmd/ack.\n\nDashboard group: Shack Monitoring tools > AS3935 Tuning."
+    "info": "MQTT control + status + events panels for the vu2cpl-as3935-bridge ESP32.\n\nTuning panel publishes to lightning/as3935/cmd, subscribes to status/hb/cmd/ack.\nEvents panel subscribes to lightning/as3935 (live stream) and lightning/as3935/last_event (retained \u2014 survives Node-RED restart).\n\nTest plan: see nodered/README.md \u2192 Comprehensive test plan."
   },
   {
     "id": "as3935_ctl_grp",
@@ -12,6 +12,17 @@
     "name": "AS3935 Tuning",
     "tab": "bcce4e07ac31b882",
     "order": 30,
+    "disp": false,
+    "width": "12",
+    "collapse": false,
+    "className": ""
+  },
+  {
+    "id": "as3935_evt_grp",
+    "type": "ui_group",
+    "name": "AS3935 Events",
+    "tab": "bcce4e07ac31b882",
+    "order": 31,
     "disp": false,
     "width": "12",
     "collapse": false,
@@ -34,7 +45,7 @@
     "y": 100,
     "wires": [
       [
-        "as3935_ctl_panel"
+        "as3935_tuning_cache_status"
       ]
     ]
   },
@@ -55,7 +66,7 @@
     "y": 160,
     "wires": [
       [
-        "as3935_ctl_panel"
+        "as3935_tuning_cache_hb"
       ]
     ]
   },
@@ -76,6 +87,112 @@
     "y": 220,
     "wires": [
       [
+        "as3935_tuning_cache_ack"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_tuning_cache_status",
+    "type": "function",
+    "z": "as3935_ctl_flow",
+    "name": "Cache /status",
+    "func": "// Pass-through: cache msg.payload to flow.as3935_status so the\n// 5s replay tick can rehydrate the Control Panel within ~5s\n// of any page open (browser refresh or fresh tab).\nflow.set('as3935_status', msg.payload);\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 320,
+    "y": 100,
+    "wires": [
+      [
+        "as3935_ctl_panel"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_tuning_cache_hb",
+    "type": "function",
+    "z": "as3935_ctl_flow",
+    "name": "Cache /hb",
+    "func": "// Pass-through: cache msg.payload to flow.as3935_hb so the\n// 5s replay tick can rehydrate the Control Panel within ~5s\n// of any page open (browser refresh or fresh tab).\nflow.set('as3935_hb', msg.payload);\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 320,
+    "y": 160,
+    "wires": [
+      [
+        "as3935_ctl_panel"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_tuning_cache_ack",
+    "type": "function",
+    "z": "as3935_ctl_flow",
+    "name": "Cache /cmd_ack",
+    "func": "// Pass-through: cache msg.payload to flow.as3935_cmd_ack so the\n// 5s replay tick can rehydrate the Control Panel within ~5s\n// of any page open (browser refresh or fresh tab).\nflow.set('as3935_cmd_ack', msg.payload);\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 320,
+    "y": 220,
+    "wires": [
+      [
+        "as3935_ctl_panel"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_tuning_replay_tick",
+    "type": "inject",
+    "z": "as3935_ctl_flow",
+    "name": "Replay every 5s",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "5",
+    "crontab": "",
+    "once": true,
+    "onceDelay": 1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 160,
+    "y": 300,
+    "wires": [
+      [
+        "as3935_tuning_replay_fn",
+        "as3935_evt_replay_fn"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_tuning_replay_fn",
+    "type": "function",
+    "z": "as3935_ctl_flow",
+    "name": "Replay AS3935 state (5s tick)",
+    "func": "// Fires every 5s from the replay tick inject. Reads cached MQTT state\n// from flow context and re-emits to the Control Panel with original\n// msg.topic preserved (the Control Panel dispatches on msg.topic in\n// scope.$watch, no template change needed).\n//\n// Worst-case rehydration after opening the dashboard cold: 5s.\n// Background traffic when idle (no clients connected): same 5s tick,\n// emits up to 3 small JSON messages to the ui_template -- trivial load,\n// node-red-dashboard handles fan-out efficiently.\n//\n// Why a periodic tick instead of node-red-dashboard's ui_control event\n// node: ui_control isn't shipped in node-red-dashboard 3.6.6 (confirmed\n// by --force reinstall, files genuinely absent). Tick is the workable\n// substitute until either Dashboard 1 ships ui_control again or we\n// migrate widgets to Dashboard 2 (FlowFuse).\nconst status = flow.get('as3935_status');\nconst hb     = flow.get('as3935_hb');\nconst ack    = flow.get('as3935_cmd_ack');\n\nlet emitted = 0;\nif (status) { node.send({ topic: 'lightning/as3935/status',  payload: status }); emitted++; }\nif (hb)     { node.send({ topic: 'lightning/as3935/hb',      payload: hb     }); emitted++; }\nif (ack)    { node.send({ topic: 'lightning/as3935/cmd/ack', payload: ack    }); emitted++; }\n\nnode.status({fill: emitted ? 'green' : 'grey', shape: 'dot',\n             text: 'replay tick \u00b7 ' + emitted + ' msg(s)'});\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 380,
+    "y": 300,
+    "wires": [
+      [
         "as3935_ctl_panel"
       ]
     ]
@@ -89,7 +206,7 @@
     "order": 1,
     "width": "12",
     "height": "18",
-    "format": "<style>\n:root{\n  --bg:#0d1117; --card:#161b22; --border:#21262d;\n  --accent:#238636; --danger:#da3633; --warn:#e3b341;\n  --muted:#8b949e; --text:#c9d1d9;\n  --green:#3fb950; --red:#f85149; --amber:#e3b341;\n  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;\n  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;\n}\n#a35tune *{box-sizing:border-box;margin:0;padding:0}\n#a35tune{\n  font-family:var(--font); background:var(--bg); color:var(--text);\n  padding:10px; display:flex; flex-direction:column; gap:8px;\n  font-size:13px;\n}\n#a35tune .card{\n  background:var(--card); border:1px solid var(--border);\n  border-radius:8px; padding:10px 14px;\n}\n#a35tune .hdr{display:flex;align-items:center;gap:10px}\n#a35tune .led{\n  display:inline-block; width:12px; height:12px; border-radius:50%;\n  background:var(--muted); box-shadow:0 0 6px currentColor;\n}\n#a35tune .title{font-weight:700; font-size:14px; letter-spacing:.3px}\n#a35tune .meta{color:var(--muted); font-size:11px; margin-left:auto;\n  font-family:var(--mono)}\n#a35tune .counters{\n  font-family:var(--mono); font-size:13px; letter-spacing:.5px;\n}\n#a35tune .calib{color:var(--muted); font-size:11px;\n  font-family:var(--mono)}\n#a35tune .tune{display:flex; flex-direction:column; gap:6px}\n#a35tune .trow{\n  display:flex; align-items:center; gap:8px; font-size:12px;\n}\n#a35tune .lbl{width:100px; color:var(--muted)}\n#a35tune .val{\n  display:inline-block; min-width:34px; text-align:center;\n  background:var(--bg); border:1px solid var(--border);\n  border-radius:4px; padding:2px 8px;\n  font-family:var(--mono); font-weight:700;\n}\n#a35tune .rng{color:var(--muted); font-size:10px; margin-left:auto;\n  font-family:var(--mono)}\n#a35tune button{\n  font-family:var(--font); background:var(--card); color:var(--text);\n  border:1px solid var(--border); border-radius:6px;\n  padding:5px 10px; font-size:12px; cursor:pointer;\n  transition:background 100ms, border-color 100ms;\n}\n#a35tune button:hover{background:#21262d; border-color:#3a414b}\n#a35tune button:active{transform:translateY(1px)}\n#a35tune button:disabled{opacity:.35; cursor:not-allowed}\n#a35tune .trow button{padding:2px 9px; min-width:26px;\n  font-family:var(--mono); font-weight:700; font-size:14px;\n  line-height:1}\n#a35tune select{\n  font-family:var(--font); background:var(--bg); color:var(--text);\n  border:1px solid var(--border); border-radius:4px;\n  padding:3px 6px; font-size:12px;\n}\n#a35tune .actions{display:flex; flex-wrap:wrap; gap:6px}\n#a35tune button.primary{\n  background:var(--accent); border-color:var(--accent);\n  color:white; font-weight:600;\n}\n#a35tune button.primary:hover{background:#2ea043; border-color:#2ea043}\n#a35tune button.warn{\n  background:transparent; border-color:var(--warn); color:var(--warn);\n}\n#a35tune button.warn:hover{background:rgba(227,179,65,.1)}\n#a35tune button.danger{\n  background:transparent; border-color:var(--danger); color:var(--red);\n}\n#a35tune button.danger:hover{background:rgba(218,54,51,.1)}\n#a35tune .ack{\n  font-family:var(--mono); font-size:11px; color:var(--muted);\n}\n#a35tune .ack.ok{color:var(--green)}\n#a35tune .ack.bad{color:var(--red)}\n#a35tune .sect{font-size:10px; color:var(--muted);\n  text-transform:uppercase; letter-spacing:1px; margin-bottom:4px}\n</style>\n<div id=\"a35tune\">\n  <div class=\"card hdr\">\n    <span class=\"led\" id=\"a35led\"></span>\n    <span class=\"title\">AS3935 Bridge</span>\n    <span class=\"meta\" id=\"a35meta\">awaiting status...</span>\n  </div>\n\n  <div class=\"card counters\" id=\"a35counters\">awaiting heartbeat...</div>\n\n  <div class=\"card calib\" id=\"a35calib\">Calib: \u2014</div>\n\n  <div class=\"card tune\">\n    <div class=\"sect\">Tunables</div>\n    <div class=\"trow\"><span class=\"lbl\">NF</span>\n      <span class=\"val\" id=\"a35nf\">\u2014</span>\n      <button onclick=\"a35.nudge('nf',-1,0,7)\">\u2212</button>\n      <button onclick=\"a35.nudge('nf',+1,0,7)\">+</button>\n      <span class=\"rng\">0..7</span></div>\n    <div class=\"trow\"><span class=\"lbl\">WDTH</span>\n      <span class=\"val\" id=\"a35wdth\">\u2014</span>\n      <button onclick=\"a35.nudge('wdth',-1,0,15)\">\u2212</button>\n      <button onclick=\"a35.nudge('wdth',+1,0,15)\">+</button>\n      <span class=\"rng\">0..15</span></div>\n    <div class=\"trow\"><span class=\"lbl\">SREJ</span>\n      <span class=\"val\" id=\"a35srej\">\u2014</span>\n      <button onclick=\"a35.nudge('srej',-1,0,15)\">\u2212</button>\n      <button onclick=\"a35.nudge('srej',+1,0,15)\">+</button>\n      <span class=\"rng\">0..15</span></div>\n    <div class=\"trow\"><span class=\"lbl\">TUN_CAP</span>\n      <span class=\"val\" id=\"a35tuncap\">\u2014</span>\n      <button onclick=\"a35.nudge('tun_cap',-1,0,15)\">\u2212</button>\n      <button onclick=\"a35.nudge('tun_cap',+1,0,15)\">+</button>\n      <span class=\"rng\">0..15</span></div>\n    <div class=\"trow\"><span class=\"lbl\">Mask dist</span>\n      <span class=\"val\" id=\"a35mask\">\u2014</span>\n      <button onclick=\"a35.toggle('mask_dist')\">toggle</button>\n      <span class=\"rng\">on/off</span></div>\n    <div class=\"trow\"><span class=\"lbl\">Min strikes</span>\n      <select id=\"a35mnl\" onchange=\"a35.set('min_num_lightning', parseInt(this.value))\">\n        <option value=\"1\">1</option><option value=\"5\">5</option>\n        <option value=\"9\">9</option><option value=\"16\">16</option>\n      </select>\n      <span class=\"rng\">storm filter</span></div>\n    <div class=\"trow\"><span class=\"lbl\">Modem sleep</span>\n      <select id=\"a35ms\" onchange=\"a35.set('modem_sleep', this.value)\">\n        <option value=\"max\">max</option><option value=\"min\">min</option>\n      </select>\n      <span class=\"rng\">WiFi PS</span></div>\n  </div>\n\n  <div class=\"card actions\">\n    <div class=\"sect\" style=\"width:100%\">Actions</div>\n    <button class=\"primary\" onclick=\"a35.action('calibrate_tun_cap')\">Calibrate TUN_CAP (~35s)</button>\n    <button onclick=\"a35.action('republish_status')\">Republish Status</button>\n    <button class=\"warn\" onclick=\"a35.confirm('Reboot the ESP32?', 'reboot')\">Reboot ESP32</button>\n    <button class=\"danger\" onclick=\"a35.confirm('Erase stored WiFi creds and reboot into setup AP?', 'factory_reset_wifi')\">Factory Reset WiFi</button>\n  </div>\n\n  <div class=\"card ack\" id=\"a35ack\">No commands yet</div>\n</div>\n<script>\n(function(){\n  // 'scope' is the AngularJS controller scope that Node-RED's ui_template\n  // exposes inside this <script> block. Do NOT shadow it with\n  // 'var scope = this;' \u2014 the IIFE's `this` is undefined/window and we'd\n  // lose access to scope.send / scope.$watch. The Master Dashboard\n  // template uses the same closure-from-controller pattern.\n  var state = {};\n  var hb = {counters:{}};\n\n  function $(id){return document.getElementById(id);}\n  function fmtUptime(s){\n    if(s==null) return '?';\n    var h=Math.floor(s/3600), m=Math.floor((s%3600)/60), x=s%60;\n    return (h?h+'h ':'') + (m?m+'m ':'') + x+'s';\n  }\n\n  function render(){\n    var led = $('a35led');\n    if(led){\n      var ok = state.event==='ready'\n        && state.calib_trco==='OK' && state.calib_srco==='OK';\n      var off = state.event==='offline';\n      led.style.background = off ? 'var(--red)'\n        : ok ? 'var(--green)' : 'var(--amber)';\n      led.style.color      = off ? 'var(--red)'\n        : ok ? 'var(--green)' : 'var(--amber)';\n    }\n    var meta = $('a35meta');\n    if(meta){\n      meta.textContent =\n        'FW ' + (state.fw || '\u2014')\n        + ' \u00b7 IP ' + (state.ip || '?')\n        + ' \u00b7 RSSI ' + ((hb.rssi != null ? hb.rssi : state.rssi) || '?') + ' dBm'\n        + ' \u00b7 up ' + fmtUptime(hb.uptime_s);\n    }\n    var c = hb.counters || {};\n    var cn = $('a35counters');\n    if(cn){\n      cn.textContent =\n        '\u26a1 ' + (c.lightning || 0)\n        + '   \u26a0 ' + (c.disturber || 0)\n        + '   \ud83d\udce1 ' + (c.noise || 0)\n        + '   IRQ ' + (c.irq || 0);\n    }\n    var cal = $('a35calib');\n    if(cal){\n      cal.textContent =\n        'Calib: TRCO=' + (state.calib_trco || '?')\n        + ' \u00b7 SRCO=' + (state.calib_srco || '?')\n        + ' \u00b7 afe_gb=' + (state.afe_gb || '?');\n    }\n    if(state.nf      != null && $('a35nf'))     $('a35nf').textContent = state.nf;\n    if(state.wdth    != null && $('a35wdth'))   $('a35wdth').textContent = state.wdth;\n    if(state.srej    != null && $('a35srej'))   $('a35srej').textContent = state.srej;\n    if(state.tun_cap != null && $('a35tuncap')) $('a35tuncap').textContent = state.tun_cap;\n    if(state.mask_dist != null && $('a35mask')){\n      $('a35mask').textContent = state.mask_dist ? 'ON' : 'OFF';\n      $('a35mask').style.color = state.mask_dist ? 'var(--amber)' : 'var(--text)';\n    }\n    if(state.min_num_lightning != null && $('a35mnl'))\n      $('a35mnl').value = String(state.min_num_lightning);\n    if(state.modem_sleep && $('a35ms'))\n      $('a35ms').value = state.modem_sleep;\n  }\n\n  window.a35 = {\n    nudge: function(key, delta, lo, hi){\n      var v = (state[key] == null ? 0 : state[key]) + delta;\n      if(v < lo || v > hi) return;\n      this.set(key, v);\n    },\n    toggle: function(key){ this.set(key, !state[key]); },\n    set: function(key, value){\n      scope.send({ payload: { set: key, value: value } });\n    },\n    action: function(name){\n      scope.send({ payload: { action: name } });\n    },\n    confirm: function(msg, action){\n      if(confirm(msg)) this.action(action);\n    }\n  };\n\n  scope.$watch('msg', function(msg){\n    if(!msg || !msg.topic) return;\n    var p = msg.payload;\n    if(typeof p === 'string'){ try { p = JSON.parse(p); } catch(e){ return; } }\n    if(msg.topic === 'lightning/as3935/status'){ state = p || {}; }\n    else if(msg.topic === 'lightning/as3935/hb'){ hb = p || {counters:{}}; }\n    else if(msg.topic === 'lightning/as3935/cmd/ack' && $('a35ack')){\n      var t = (p && p.ts || '').slice(11);\n      $('a35ack').textContent =\n        (p.ok ? '\u2713 ' : '\u2717 ') + (p.cmd || '?')\n        + (p.error ? ' \u2014 ' + p.error : '') + (t ? '  @ ' + t : '');\n      $('a35ack').className = 'card ack ' + (p.ok ? 'ok' : 'bad');\n    }\n    render();\n  });\n\n  render();\n})();\n</script>\n",
+    "format": "<style>\n:root{\n  --bg:#0d1117; --card:#161b22; --border:#21262d;\n  --accent:#238636; --danger:#da3633; --warn:#e3b341;\n  --muted:#8b949e; --text:#c9d1d9;\n  --green:#3fb950; --red:#f85149; --amber:#e3b341;\n  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;\n  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;\n}\n#a35tune *{box-sizing:border-box;margin:0;padding:0}\n#a35tune{\n  font-family:var(--font); background:var(--bg); color:var(--text);\n  padding:10px; display:flex; flex-direction:column; gap:8px;\n  font-size:13px;\n}\n#a35tune .card{\n  background:var(--card); border:1px solid var(--border);\n  border-radius:8px; padding:10px 14px;\n}\n#a35tune .hdr{display:flex;align-items:center;gap:10px}\n#a35tune .led{\n  display:inline-block; width:12px; height:12px; border-radius:50%;\n  background:var(--muted); box-shadow:0 0 6px currentColor;\n}\n#a35tune .title{font-weight:700; font-size:14px; letter-spacing:.3px}\n#a35tune .meta{color:var(--text); font-size:11px; margin-left:auto;\n  font-family:var(--mono)}\n#a35tune .counters{\n  font-family:var(--mono); font-size:13px; letter-spacing:.5px;\n}\n#a35tune .calib{color:var(--muted); font-size:11px;\n  font-family:var(--mono)}\n#a35tune .tune{display:flex; flex-direction:column; gap:6px}\n#a35tune .trow{\n  display:flex; align-items:center; gap:8px; font-size:12px;\n}\n#a35tune .lbl{width:100px; color:var(--muted)}\n#a35tune .val{\n  display:inline-block; min-width:34px; text-align:center;\n  background:var(--bg); border:1px solid var(--border);\n  border-radius:4px; padding:2px 8px;\n  font-family:var(--mono); font-weight:700;\n}\n#a35tune .rng{color:var(--muted); font-size:10px; margin-left:auto;\n  font-family:var(--mono)}\n#a35tune button{\n  font-family:var(--font); background:var(--card); color:var(--text);\n  border:1px solid var(--border); border-radius:6px;\n  padding:5px 10px; font-size:12px; cursor:pointer;\n  transition:background 100ms, border-color 100ms;\n}\n#a35tune button:hover{background:#21262d; border-color:#3a414b}\n#a35tune button:active{transform:translateY(1px)}\n#a35tune button:disabled{opacity:.35; cursor:not-allowed}\n#a35tune .trow button{padding:2px 9px; min-width:26px;\n  font-family:var(--mono); font-weight:700; font-size:14px;\n  line-height:1}\n#a35tune select{\n  font-family:var(--font); background:var(--bg); color:var(--text);\n  border:1px solid var(--border); border-radius:4px;\n  padding:3px 6px; font-size:12px;\n}\n#a35tune .actions{display:flex; flex-wrap:wrap; gap:6px}\n#a35tune button.primary{\n  background:var(--accent); border-color:var(--accent);\n  color:white; font-weight:600;\n}\n#a35tune button.primary:hover{background:#2ea043; border-color:#2ea043}\n#a35tune button.warn{\n  background:transparent; border-color:var(--warn); color:var(--warn);\n}\n#a35tune button.warn:hover{background:rgba(227,179,65,.1)}\n#a35tune button.danger{\n  background:transparent; border-color:var(--danger); color:var(--red);\n}\n#a35tune button.danger:hover{background:rgba(218,54,51,.1)}\n#a35tune .ack{\n  font-family:var(--mono); font-size:11px; color:var(--muted);\n}\n#a35tune .ack.ok{color:var(--green)}\n#a35tune .ack.bad{color:var(--red)}\n#a35tune .sect{font-size:10px; color:var(--muted);\n  text-transform:uppercase; letter-spacing:1px; margin-bottom:4px}\n</style>\n<div id=\"a35tune\">\n  <div class=\"card hdr\">\n    <span class=\"led\" id=\"a35led\"></span>\n    <span class=\"title\">AS3935 Bridge</span>\n    <span class=\"meta\" id=\"a35meta\">awaiting status...</span>\n  </div>\n\n  <div class=\"card counters\" id=\"a35counters\">awaiting heartbeat...</div>\n\n  <div class=\"card calib\" id=\"a35calib\">Calib: \u2014</div>\n\n  <div class=\"card tune\">\n    <div class=\"sect\">Tunables</div>\n    <div class=\"trow\"><span class=\"lbl\">NF</span>\n      <span class=\"val\" id=\"a35nf\">\u2014</span>\n      <button onclick=\"a35.nudge('nf',-1,0,7)\">\u2212</button>\n      <button onclick=\"a35.nudge('nf',+1,0,7)\">+</button>\n      <span class=\"rng\">0..7</span></div>\n    <div class=\"trow\"><span class=\"lbl\">WDTH</span>\n      <span class=\"val\" id=\"a35wdth\">\u2014</span>\n      <button onclick=\"a35.nudge('wdth',-1,0,15)\">\u2212</button>\n      <button onclick=\"a35.nudge('wdth',+1,0,15)\">+</button>\n      <span class=\"rng\">0..15</span></div>\n    <div class=\"trow\"><span class=\"lbl\">SREJ</span>\n      <span class=\"val\" id=\"a35srej\">\u2014</span>\n      <button onclick=\"a35.nudge('srej',-1,0,15)\">\u2212</button>\n      <button onclick=\"a35.nudge('srej',+1,0,15)\">+</button>\n      <span class=\"rng\">0..15</span></div>\n    <div class=\"trow\"><span class=\"lbl\">TUN_CAP</span>\n      <span class=\"val\" id=\"a35tuncap\">\u2014</span>\n      <button onclick=\"a35.nudge('tun_cap',-1,0,15)\">\u2212</button>\n      <button onclick=\"a35.nudge('tun_cap',+1,0,15)\">+</button>\n      <span class=\"rng\">0..15</span></div>\n    <div class=\"trow\"><span class=\"lbl\">Mask dist</span>\n      <span class=\"val\" id=\"a35mask\">\u2014</span>\n      <button onclick=\"a35.toggle('mask_dist')\">toggle</button>\n      <span class=\"rng\">on/off</span></div>\n    <div class=\"trow\"><span class=\"lbl\">AFE GB</span>\n      <span class=\"val\" id=\"a35afe\">\u2014</span>\n      <button onclick=\"a35.toggleAfe()\">toggle</button>\n      <span class=\"rng\">indoor/outdoor</span></div>\n    <div class=\"trow\"><span class=\"lbl\">Min strikes</span>\n      <select id=\"a35mnl\" onchange=\"a35.set('min_num_lightning', parseInt(this.value))\">\n        <option value=\"1\">1</option><option value=\"5\">5</option>\n        <option value=\"9\">9</option><option value=\"16\">16</option>\n      </select>\n      <span class=\"rng\">storm filter</span></div>\n    <div class=\"trow\"><span class=\"lbl\">Modem sleep</span>\n      <select id=\"a35ms\" onchange=\"a35.set('modem_sleep', this.value)\">\n        <option value=\"max\">max</option><option value=\"min\">min</option>\n      </select>\n      <span class=\"rng\">WiFi PS</span></div>\n  </div>\n\n  <div class=\"card actions\">\n    <div class=\"sect\" style=\"width:100%\">Actions</div>\n    <button class=\"primary\" onclick=\"a35.action('calibrate_tun_cap')\">Calibrate TUN_CAP (~35s)</button>\n    <button onclick=\"a35.action('republish_status')\">Republish Status</button>\n    <button class=\"warn\" onclick=\"a35.confirm('Reboot the ESP32?', 'reboot')\">Reboot ESP32</button>\n    <button class=\"danger\" onclick=\"a35.confirm('Erase stored WiFi creds and reboot into setup AP?', 'factory_reset_wifi')\">Factory Reset WiFi</button>\n  </div>\n\n  <div class=\"card ack\" id=\"a35ack\">No commands yet</div>\n</div>\n<script>\n(function(scope){\n  // Pattern B (matches chrony card): IIFE takes scope as parameter,\n  // captured from the top-level closure where node-red-dashboard exposes\n  // it. Don't rely on `this` \u2014 IIFE's this is window, not the directive's\n  // scope, so `var scope = this;` would silently set scope=window.\n  var state = {};\n  var hb = {counters:{}};\n\n  function $(id){return document.getElementById(id);}\n  function fmtUptime(s){\n    if(s==null) return '?';\n    var h=Math.floor(s/3600), m=Math.floor((s%3600)/60), x=s%60;\n    return (h?h+'h ':'') + (m?m+'m ':'') + x+'s';\n  }\n\n  function render(){\n    var led = $('a35led');\n    if(led){\n      var ok = state.event==='ready'\n        && state.calib_trco==='OK' && state.calib_srco==='OK';\n      var off = state.event==='offline';\n      led.style.background = off ? 'var(--red)'\n        : ok ? 'var(--green)' : 'var(--amber)';\n      led.style.color      = off ? 'var(--red)'\n        : ok ? 'var(--green)' : 'var(--amber)';\n    }\n    var meta = $('a35meta');\n    if(meta){\n      meta.textContent =\n        'FW ' + (state.fw || '\u2014')\n        + ' \u00b7 IP ' + (state.ip || '?')\n        + ' \u00b7 RSSI ' + ((hb.rssi != null ? hb.rssi : state.rssi) || '?') + ' dBm'\n        + ' \u00b7 up ' + fmtUptime(hb.uptime_s);\n    }\n    var c = hb.counters || {};\n    var cn = $('a35counters');\n    if(cn){\n      cn.textContent =\n        '\u26a1 ' + (c.lightning || 0)\n        + '   \u26a0 ' + (c.disturber || 0)\n        + '   \ud83d\udce1 ' + (c.noise || 0)\n        + '   IRQ ' + (c.irq || 0);\n    }\n    var cal = $('a35calib');\n    if(cal){\n      cal.textContent =\n        'Calib: TRCO=' + (state.calib_trco || '?')\n        + ' \u00b7 SRCO=' + (state.calib_srco || '?');\n    }\n    if(state.nf      != null && $('a35nf'))     $('a35nf').textContent = state.nf;\n    if(state.wdth    != null && $('a35wdth'))   $('a35wdth').textContent = state.wdth;\n    if(state.srej    != null && $('a35srej'))   $('a35srej').textContent = state.srej;\n    if(state.tun_cap != null && $('a35tuncap')) $('a35tuncap').textContent = state.tun_cap;\n    if(state.mask_dist != null && $('a35mask')){\n      $('a35mask').textContent = state.mask_dist ? 'ON' : 'OFF';\n      $('a35mask').style.color = state.mask_dist ? 'var(--amber)' : 'var(--text)';\n    }\n    if(state.afe_gb && $('a35afe')){\n      $('a35afe').textContent = state.afe_gb.toUpperCase();\n      $('a35afe').style.color = state.afe_gb === 'outdoor' ? 'var(--green)' : 'var(--amber)';\n    }\n    if(state.min_num_lightning != null && $('a35mnl'))\n      $('a35mnl').value = String(state.min_num_lightning);\n    if(state.modem_sleep && $('a35ms'))\n      $('a35ms').value = state.modem_sleep;\n  }\n\n  window.a35 = {\n    nudge: function(key, delta, lo, hi){\n      var v = (state[key] == null ? 0 : state[key]) + delta;\n      if(v < lo || v > hi) return;\n      this.set(key, v);\n    },\n    toggle: function(key){ this.set(key, !state[key]); },\n    toggleAfe: function(){ this.set('afe_gb', state.afe_gb === 'outdoor' ? 'indoor' : 'outdoor'); },\n    set: function(key, value){\n      scope.send({ payload: { set: key, value: value } });\n    },\n    action: function(name){\n      scope.send({ payload: { action: name } });\n    },\n    confirm: function(msg, action){\n      if(confirm(msg)) this.action(action);\n    }\n  };\n\n  scope.$watch('msg', function(msg){\n    if(!msg || !msg.topic) return;\n    var p = msg.payload;\n    if(typeof p === 'string'){ try { p = JSON.parse(p); } catch(e){ return; } }\n    if(msg.topic === 'lightning/as3935/status'){ state = p || {}; }\n    else if(msg.topic === 'lightning/as3935/hb'){ hb = p || {counters:{}}; }\n    else if(msg.topic === 'lightning/as3935/cmd/ack' && $('a35ack')){\n      var t = (p && p.ts || '').slice(11);\n      $('a35ack').textContent =\n        (p.ok ? '\u2713 ' : '\u2717 ') + (p.cmd || '?')\n        + (p.error ? ' \u2014 ' + p.error : '') + (t ? '  @ ' + t : '');\n      $('a35ack').className = 'card ack ' + (p.ok ? 'ok' : 'bad');\n    }\n    render();\n  });\n\n  render();\n})(scope);\n</script>\n",
     "storeOutMessages": true,
     "fwdInMessages": false,
     "resendOnRefresh": true,
@@ -119,6 +236,262 @@
     "broker": "f4785be9863eab08",
     "x": 720,
     "y": 160,
+    "wires": []
+  },
+  {
+    "id": "as3935_evt_in",
+    "type": "mqtt in",
+    "z": "as3935_ctl_flow",
+    "name": "AS3935 Event",
+    "topic": "lightning/as3935",
+    "qos": "0",
+    "datatype": "json",
+    "broker": "f4785be9863eab08",
+    "nl": false,
+    "rap": false,
+    "rh": 0,
+    "inputs": 0,
+    "x": 160,
+    "y": 440,
+    "wires": [
+      [
+        "as3935_evt_panel"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_evt_last_in",
+    "type": "mqtt in",
+    "z": "as3935_ctl_flow",
+    "name": "AS3935 Last Event (retained)",
+    "topic": "lightning/as3935/last_event",
+    "qos": "1",
+    "datatype": "json",
+    "broker": "f4785be9863eab08",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 210,
+    "y": 500,
+    "wires": [
+      [
+        "as3935_evt_cache_last"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_evt_cache_last",
+    "type": "function",
+    "z": "as3935_ctl_flow",
+    "name": "Cache /last_event",
+    "func": "// Cache the retained last_event payload to flow context. The 5s\n// replay tick re-emits it so the Last Event card rehydrates after\n// a page refresh even if no fresh event has arrived since.\nflow.set('as3935_last_event', msg.payload);\nreturn msg;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 420,
+    "y": 500,
+    "wires": [
+      [
+        "as3935_evt_panel"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_evt_replay_fn",
+    "type": "function",
+    "z": "as3935_ctl_flow",
+    "name": "Replay last_event (5s tick)",
+    "func": "// Shares the as3935_tuning_replay_tick. Reads cached last_event\n// and re-emits with original topic preserved so the Events panel\n// Last Event card rehydrates within 5s of a page open.\n//\n// We deliberately do NOT replay live lightning/as3935 events --\n// the rolling log is session-only (replaying would double-count\n// and shuffle ordering on every tick).\nconst last = flow.get('as3935_last_event');\nif (last) {\n    node.send({ topic: 'lightning/as3935/last_event', payload: last });\n    node.status({fill:'green', shape:'dot', text:'replay \u00b7 last_event'});\n} else {\n    node.status({fill:'grey', shape:'ring', text:'replay \u00b7 empty'});\n}\nreturn null;\n",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 420,
+    "y": 560,
+    "wires": [
+      [
+        "as3935_evt_panel"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_evt_panel",
+    "type": "ui_template",
+    "z": "as3935_ctl_flow",
+    "group": "as3935_evt_grp",
+    "name": "AS3935 Events Panel",
+    "order": 1,
+    "width": "12",
+    "height": "16",
+    "format": "<style>\n#a35ev *{box-sizing:border-box;margin:0;padding:0}\n#a35ev{\n  font-family:var(--font); background:var(--bg); color:var(--text);\n  padding:10px; display:flex; flex-direction:column; gap:8px;\n  font-size:13px;\n}\n#a35ev .card{\n  background:var(--card); border:1px solid var(--border);\n  border-radius:8px; padding:10px 14px;\n}\n#a35ev .lastev{display:flex; align-items:center; gap:14px}\n#a35ev .icon{font-size:30px; line-height:1; min-width:34px;\n  text-align:center}\n#a35ev .lastev .body{flex:1; display:flex; flex-direction:column; gap:3px}\n#a35ev .lastev .label{\n  font-size:10px; color:var(--muted);\n  text-transform:uppercase; letter-spacing:1px;\n}\n#a35ev .lastev .summary{\n  font-size:15px; font-weight:600; color:var(--text);\n}\n#a35ev .lastev .summary.lightning{color:var(--red)}\n#a35ev .lastev .summary.disturber{color:var(--amber)}\n#a35ev .lastev .summary.noise{color:var(--muted)}\n#a35ev .lastev .when{\n  font-family:var(--mono); font-size:11px; color:var(--muted);\n}\n#a35ev .countstrip{display:flex; gap:18px;\n  font-family:var(--mono); font-size:13px}\n#a35ev .cnt{display:flex; align-items:center; gap:5px}\n#a35ev .cnt .v{font-weight:700; color:var(--text)}\n#a35ev .cnt.lightning .v{color:var(--red)}\n#a35ev .cnt.disturber .v{color:var(--amber)}\n#a35ev .cnt.noise .v{color:var(--muted)}\n#a35ev .log{\n  font-family:var(--mono); font-size:11px;\n  max-height:280px; overflow-y:auto;\n  display:flex; flex-direction:column;\n}\n#a35ev .row{\n  display:flex; gap:10px; padding:4px 0;\n  border-bottom:1px solid var(--border);\n}\n#a35ev .row:last-of-type{border-bottom:none}\n#a35ev .row.lightning .ev{color:var(--red)}\n#a35ev .row.disturber .ev{color:var(--amber)}\n#a35ev .row.noise .ev{color:var(--muted)}\n#a35ev .ts{color:var(--muted); flex-shrink:0; width:78px}\n#a35ev .ev{flex:1}\n#a35ev .empty{color:var(--muted); text-align:center; padding:14px;\n  font-family:var(--font); font-size:12px}\n#a35ev .sect{\n  font-size:10px; color:var(--muted);\n  text-transform:uppercase; letter-spacing:1px; margin-bottom:6px;\n}\n</style>\n<div id=\"a35ev\">\n  <div class=\"card lastev\">\n    <span class=\"icon\" id=\"a35ev-icon\">\u2014</span>\n    <div class=\"body\">\n      <span class=\"label\">Last Event  (retained \u2014 survives restart)</span>\n      <span class=\"summary\" id=\"a35ev-summary\">awaiting first event...</span>\n      <span class=\"when\" id=\"a35ev-when\"></span>\n    </div>\n  </div>\n\n  <div class=\"card\">\n    <div class=\"sect\">Session counters  (since this browser opened)</div>\n    <div class=\"countstrip\">\n      <span class=\"cnt lightning\"><span>\u26a1 lightning</span><span class=\"v\" id=\"a35ev-c-l\">0</span></span>\n      <span class=\"cnt disturber\"><span>\u26a0 disturber</span><span class=\"v\" id=\"a35ev-c-d\">0</span></span>\n      <span class=\"cnt noise\"><span>\ud83d\udce1 noise</span><span class=\"v\" id=\"a35ev-c-n\">0</span></span>\n    </div>\n  </div>\n\n  <div class=\"card\">\n    <div class=\"sect\">Recent events  (newest first \u00b7 capped at 30)</div>\n    <div class=\"log\" id=\"a35ev-log\">\n      <div class=\"empty\">no events yet</div>\n    </div>\n  </div>\n</div>\n<script>\n(function(scope){\n  // Pattern B (matches tuning panel + chrony card): IIFE takes scope as\n  // parameter from the top-level Angular controller. Don't shadow scope\n  // with `var scope = this;` \u2014 IIFE's `this` is window.\n  var log = [];                                // newest-first, cap 30\n  var counts = { lightning:0, disturber:0, noise:0 };\n  var lastEv = null;\n  var lastEvWallMs = 0;\n\n  function $(id){ return document.getElementById(id); }\n\n  function fmtClock(ts){\n    if(!ts) return '\u2014';\n    var s = String(ts);\n    var i = s.indexOf('T');\n    if(i >= 0) return s.slice(i+1).split('.')[0];   // ISO 8601 \u2192 HH:MM:SS\n    return s;\n  }\n  function agoText(ms){\n    if(!ms) return '';\n    var age = Math.max(0, Math.floor((Date.now()-ms)/1000));\n    if(age < 60)    return age + 's ago';\n    if(age < 3600)  return Math.floor(age/60) + 'm ago';\n    if(age < 86400) return Math.floor(age/3600) + 'h ago';\n    return Math.floor(age/86400) + 'd ago';\n  }\n  function iconFor(ev){\n    return ev === 'lightning' ? '\u26a1'\n         : ev === 'disturber' ? '\u26a0'\n         : ev === 'noise'     ? '\ud83d\udce1'\n         : '\u2014';\n  }\n  function distText(p){\n    // AS3935 reports distance 63 (0x3F) as the out-of-range sentinel.\n    if(p.distance === 63) return 'out of range';\n    if(p.distance == null) return '?';\n    if(p.distance === 0)   return 'overhead';\n    return p.distance + ' km';\n  }\n\n  function renderLast(){\n    if(!lastEv){ return; }\n    $('a35ev-icon').textContent = iconFor(lastEv.event);\n    var line;\n    if(lastEv.event === 'lightning'){\n      line = '\u26a1 Lightning \u00b7 ' + distText(lastEv) + ' \u00b7 energy ' + (lastEv.energy||0);\n    } else if(lastEv.event === 'disturber'){\n      line = '\u26a0 Disturber  (man-made interference rejected by the chip)';\n    } else if(lastEv.event === 'noise'){\n      line = '\ud83d\udce1 Noise floor too high  (raise NF if persistent)';\n    } else {\n      line = String(lastEv.event || 'unknown');\n    }\n    var sum = $('a35ev-summary');\n    sum.textContent = line;\n    sum.className = 'summary ' + (lastEv.event || '');\n    $('a35ev-when').textContent =\n      fmtClock(lastEv.timestamp) + '  \u00b7  ' + agoText(lastEvWallMs);\n  }\n  function renderCounts(){\n    $('a35ev-c-l').textContent = counts.lightning;\n    $('a35ev-c-d').textContent = counts.disturber;\n    $('a35ev-c-n').textContent = counts.noise;\n  }\n  function renderLog(){\n    var el = $('a35ev-log');\n    if(!log.length){\n      el.innerHTML = '<div class=\"empty\">no events yet</div>';\n      return;\n    }\n    var out = '';\n    for(var i=0; i<log.length; i++){\n      var r = log[i];\n      var detail = (r.event === 'lightning')\n        ? '\u26a1 ' + distText(r) + '  \u00b7  e=' + (r.energy||0)\n        : (r.event === 'disturber') ? '\u26a0 disturber'\n        : (r.event === 'noise')     ? '\ud83d\udce1 noise'\n        : r.event;\n      out += '<div class=\"row ' + r.event + '\">'\n           + '<span class=\"ts\">' + fmtClock(r.timestamp) + '</span>'\n           + '<span class=\"ev\">' + detail + '</span>'\n           + '</div>';\n    }\n    el.innerHTML = out;\n  }\n\n  // Live event from lightning/as3935 \u2014 append to log, bump counters,\n  // promote to Last Event card.\n  function ingestLive(p){\n    if(!p || !p.event) return;\n    if(counts[p.event] != null) counts[p.event]++;\n    log.unshift(p);\n    if(log.length > 30) log.length = 30;\n    lastEv = p;\n    lastEvWallMs = Date.now();\n    renderLast(); renderCounts(); renderLog();\n  }\n\n  // Retained last_event \u2014 rehydrate Last Event card only.\n  // Do NOT touch the log (retained replay would conflict with live ingest).\n  function ingestRetained(p){\n    if(!p || !p.event) return;\n    lastEv = p;\n    lastEvWallMs = p.ts_epoch_ms || Date.now();\n    renderLast();\n  }\n\n  scope.$watch('msg', function(msg){\n    if(!msg || !msg.topic) return;\n    var p = msg.payload;\n    if(typeof p === 'string'){ try { p = JSON.parse(p); } catch(e){ return; } }\n    if(msg.topic === 'lightning/as3935')                ingestLive(p);\n    else if(msg.topic === 'lightning/as3935/last_event') ingestRetained(p);\n  });\n\n  // 1Hz tick \u2014 keep the \"Xs ago\" label fresh without server traffic.\n  if(!scope._a35evTicker){\n    scope._a35evTicker = setInterval(function(){\n      if(lastEv) $('a35ev-when').textContent =\n        fmtClock(lastEv.timestamp) + '  \u00b7  ' + agoText(lastEvWallMs);\n    }, 1000);\n    scope.$on('$destroy', function(){\n      clearInterval(scope._a35evTicker);\n      scope._a35evTicker = null;\n    });\n  }\n\n  renderLast(); renderCounts(); renderLog();\n})(scope);\n</script>\n",
+    "storeOutMessages": true,
+    "fwdInMessages": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 700,
+    "y": 500,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "as3935_test_lightning_near",
+    "type": "inject",
+    "z": "as3935_ctl_flow",
+    "name": "TEST \u00b7 \u26a1 lightning @ 5 km",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"event\":\"lightning\",\"distance\":5,\"energy\":850000,\"timestamp\":\"TEST\"}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 660,
+    "wires": [
+      [
+        "as3935_evt_test_out"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_test_lightning_far",
+    "type": "inject",
+    "z": "as3935_ctl_flow",
+    "name": "TEST \u00b7 \u26a1 lightning @ 25 km",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"event\":\"lightning\",\"distance\":25,\"energy\":120000,\"timestamp\":\"TEST\"}",
+    "payloadType": "json",
+    "x": 220,
+    "y": 700,
+    "wires": [
+      [
+        "as3935_evt_test_out"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_test_lightning_oor",
+    "type": "inject",
+    "z": "as3935_ctl_flow",
+    "name": "TEST \u00b7 \u26a1 lightning out-of-range",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"event\":\"lightning\",\"distance\":63,\"energy\":40000,\"timestamp\":\"TEST\"}",
+    "payloadType": "json",
+    "x": 230,
+    "y": 740,
+    "wires": [
+      [
+        "as3935_evt_test_out"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_test_disturber",
+    "type": "inject",
+    "z": "as3935_ctl_flow",
+    "name": "TEST \u00b7 \u26a0 disturber",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"event\":\"disturber\",\"timestamp\":\"TEST\"}",
+    "payloadType": "json",
+    "x": 190,
+    "y": 780,
+    "wires": [
+      [
+        "as3935_evt_test_out"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_test_noise",
+    "type": "inject",
+    "z": "as3935_ctl_flow",
+    "name": "TEST \u00b7 \ud83d\udce1 noise",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "{\"event\":\"noise\",\"timestamp\":\"TEST\"}",
+    "payloadType": "json",
+    "x": 180,
+    "y": 820,
+    "wires": [
+      [
+        "as3935_evt_test_out"
+      ]
+    ]
+  },
+  {
+    "id": "as3935_evt_test_out",
+    "type": "mqtt out",
+    "z": "as3935_ctl_flow",
+    "name": "TEST publish \u2192 lightning/as3935",
+    "topic": "lightning/as3935",
+    "qos": "0",
+    "retain": "false",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "f4785be9863eab08",
+    "x": 580,
+    "y": 740,
+    "wires": []
+  },
+  {
+    "id": "as3935_test_comment",
+    "type": "comment",
+    "z": "as3935_ctl_flow",
+    "name": "TEST INJECTS \u2014 exercise the Events panel without the ESP32",
+    "info": "Each inject button publishes one MQTT message to lightning/as3935. The Events panel subscribes to that topic and renders the event.\n\nSee nodered/README.md \u2192 Comprehensive test plan for the full walk-through.",
+    "x": 280,
+    "y": 620,
     "wires": []
   }
 ]
