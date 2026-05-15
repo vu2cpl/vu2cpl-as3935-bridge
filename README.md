@@ -121,11 +121,21 @@ action — no enclosure-opening for re-tune after physical install.
 WiFi modem sleep enabled by default. MQTT reconnect bounded + no-publish
 watchdog → auto-restart.
 
-A Node-RED dashboard control panel ([`nodered/`](nodered/)) is **live**
-on the shack Pi (`noderedpi4`) since 2026-05-12 — provides knobs for
-every tunable + actions (Calibrate / Republish / Reboot / Factory Reset
-WiFi). Status / heartbeat / ack render in real time. The shack's
-distance-graded disconnect logic in [`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack)
+A Node-RED dashboard flow ([`nodered/`](nodered/)) is **live** on the
+shack Pi (`noderedpi4`) since 2026-05-12 and ships two `ui_template`
+panels:
+
+- **AS3935 Tuning** — knobs for every tunable + actions (Calibrate /
+  Republish / Reboot / Factory Reset WiFi). Status / heartbeat / ack
+  render in real time.
+- **AS3935 Events** — Last Event card (backed by retained
+  `lightning/as3935/last_event` so it survives Node-RED + browser
+  refresh within 5 s), session counters, 30-row rolling event log.
+
+Plus 5 TEST inject buttons that publish fake events for end-to-end
+exercise without the ESP32, and a 5-phase comprehensive test plan in
+[`nodered/README.md`](nodered/README.md). The shack's distance-graded
+disconnect logic in [`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack)
 consumes this bridge's `lightning/as3935` event stream as its primary
 strike source.
 
