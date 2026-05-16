@@ -62,8 +62,8 @@ Antenna Protector flow needs **zero changes**:
 | Topic | Direction | Payload |
 |-------|-----------|---------|
 | `lightning/as3935` | publish | Lightning: `{event:"lightning", distance, energy, timestamp}`. Disturber: `{event:"disturber", timestamp}`. Noise: `{event:"noise", timestamp}`. |
-| `lightning/as3935/status` | publish (retained) | Full state: `{event, ts, fw, ip, rssi, nf, wdth, srej, tun_cap, mask_dist, min_num_lightning, afe_gb, modem_sleep, irq_pin, calib_trco, calib_srco, …}` on (re)connect and every 5 min. LWT publishes the same topic with `event:"offline"` retained. |
-| `lightning/as3935/hb` | publish (retained) | `{alive:true, ts, uptime_s, rssi, counters:{lightning, disturber, noise, irq}}` every 30 s. |
+| `lightning/as3935/status` | publish (retained) | Full state: `{event, ts, fw, ip, rssi, nf, wdth, srej, tun_cap, mask_dist, min_num_lightning, afe_gb, modem_sleep, vbat_mv, vbat_offset_mv, irq_pin, calib_trco, calib_srco, …}` on (re)connect and every 5 min. LWT publishes the same topic with `event:"offline"` retained. |
+| `lightning/as3935/hb` | publish (retained) | `{alive:true, ts, uptime_s, rssi, vbat_mv, counters:{lightning, disturber, noise, irq}}` every 30 s. |
 | `lightning/as3935/cmd` | **subscribe** | `{"set":"<key>","value":<v>}` or `{"action":"<name>"}` — live tuning. See [`nodered/README.md`](nodered/README.md). |
 | `lightning/as3935/cmd/ack` | publish | `{ok, cmd, error?, ts}` for every received command. |
 | `lightning/as3935/last_event` | publish (retained) | `{event, distance, energy, timestamp, ts_epoch_ms}` — most recent disturber/noise/lightning event. Retained so the shack dashboard's "LAST SEEN" survives Node-RED restart. `ts_epoch_ms` is `time(nullptr) * 1000` (ms since epoch). `distance`/`energy` are `0` for disturber/noise (non-lightning events don't have physically meaningful values). |
@@ -113,6 +113,16 @@ bring-up checklist.
 
 ## Status
 
+**v0.3.0 — battery voltage telemetry (2026-05-17).** Firmware now
+publishes `vbat_mv` on `/hb` (every 30 s) and `/status` (on connect
++ every 5 min). New `cmd` action `query_vbat` returns a one-shot
+fresh reading on demand. Per-chip Vref delta correctable via the new
+`vbat_offset_mv` NVS tunable (±500 mV bracket, settable over `cmd`).
+Hardware: 100 kΩ + 100 kΩ + 100 nF divider on GPIO 34 — see
+[`WIRING.md § Battery voltage divider`](WIRING.md#battery-voltage-divider-v030-required-for-outdoor-deploy).
+Without the divider the firmware still boots and runs; it just
+reports ~0 V, which is the visual cue the mod hasn't been done.
+
 **v0.2.0 live on the bench since 2026-05-12.** Firmware exposes the
 full AS3935 register surface over an MQTT command channel
 (`lightning/as3935/cmd` in, `lightning/as3935/cmd/ack` out), NVS-backed,
@@ -126,8 +136,11 @@ shack Pi (`noderedpi4`) since 2026-05-12 and ships two `ui_template`
 panels:
 
 - **AS3935 Tuning** — knobs for every tunable + actions (Calibrate /
-  Republish / Reboot / Factory Reset WiFi). Status / heartbeat / ack
-  render in real time.
+  Republish / **Query Battery** / Reboot / Factory Reset WiFi). Status /
+  heartbeat / ack render in real time. v0.3.0 added a **🔋 battery
+  row** with mV reading, derived %SOC from a piecewise-linear LUT,
+  green / amber / red colour bands (≥ 3.90 V / 3.70–3.90 V / < 3.70 V),
+  and a "(divider not wired?)" hint when the reading is < 500 mV.
 - **AS3935 Events** — Last Event card (backed by retained
   `lightning/as3935/last_event` so it survives Node-RED + browser
   refresh within 5 s), session counters, 30-row rolling event log.
@@ -140,11 +153,13 @@ consumes this bridge's `lightning/as3935` event stream as its primary
 strike source.
 
 **Outstanding** (per [`HANDOVER.md`](HANDOVER.md) for full detail):
-verify modem-sleep current drop, build the power chain
-(TP4056 + 18650 + solar + battery voltage telemetry on GPIO 34 →
-`vbat_mv` in the heartbeat payload), seal the enclosure and do the
-field install with in-situ TUN_CAP recalibration over MQTT, then
-eventually deep-sleep + EXT0 wake on the AS3935 IRQ.
+solder the v0.3.0 battery divider + flash + verify on bench against
+a DMM, verify modem-sleep current drop, build the power chain
+(TP4056 + 18650 + solar), seal the enclosure and do the field install
+with in-situ TUN_CAP recalibration over MQTT, then eventually
+deep-sleep + EXT0 wake on the AS3935 IRQ. Shack-side Telegram alert
+on low `vbat_mv` is being tracked separately in
+[`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for version-by-version history.
 

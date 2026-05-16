@@ -35,12 +35,18 @@ Monitoring tools** tab.
 - **Status header** — colour-coded LED, FW / IP / RSSI / uptime.
 - **Counters strip** — `⚡ N · ⚠ N · 📡 N · IRQ N`.
 - **Calib line** — `TRCO=OK · SRCO=OK`.
+- **Battery row** (v0.3.0) — `🔋 V.VV V  (≈ NN %)`. Green when
+  ≥ 3.90 V, amber 3.70–3.90 V, red < 3.70 V. Shows `(divider not
+  wired?)` when the reading is < 500 mV. `vbat_offset_mv` is shown
+  on the right edge when non-zero (per-chip Vref trim).
 - **Tunables block** — NF, WDTH, SREJ, TUN_CAP with `−` / `+` nudge
   buttons; Mask-dist toggle; AFE GB toggle (indoor/outdoor — chip
   goes green when outdoor, amber when indoor); Min-strikes and
   Modem-sleep dropdowns.
-- **Actions block** — Calibrate TUN_CAP (~35 s), Republish, Reboot,
-  Factory Reset WiFi (the destructive two require a confirm dialog).
+- **Actions block** — Calibrate TUN_CAP (~35 s), Republish,
+  **Query Battery** (v0.3.0 — one-shot fresh `vbat_mv` reading
+  outside the 30 s heartbeat cadence), Reboot, Factory Reset WiFi
+  (the destructive two require a confirm dialog).
 - **Ack footer** — last command result, green tick / red cross.
 
 The three MQTT in nodes fan through `Cache /status` · `Cache /hb` ·
@@ -163,6 +169,25 @@ Events below).
 | 1.8 | **Out-of-range guard**: push `NF +` repeatedly. | At `NF=7` the next `+` should *not* publish anything (the panel's `nudge` guard kicks in before MQTT). Terminal A confirms no extra cmd. |
 | 1.9 | **Confirm dialog**: click **Reboot ESP32**, **Cancel** in the popup. | No cmd published. Re-click and **OK** — cmd flies, panel goes amber/grey for ~10 s while ESP32 reboots, then comes back green. |
 
+### Phase 1b — Battery telemetry (v0.3.0)
+
+Requires the GPIO 34 divider per [`WIRING.md § Battery voltage
+divider`](../WIRING.md#battery-voltage-divider-v030-required-for-outdoor-deploy).
+If the divider isn't soldered yet, steps 1b.1–1b.3 still run — the
+panel will show `🔋 — (divider not wired?)` and the heartbeat will
+carry `vbat_mv` close to 0 (whatever the floating ADC reads). 1b.4
+onwards needs the hardware.
+
+| # | Action | Pass criterion |
+|---|--------|----------------|
+| 1b.1 | Watch Terminal A for the next heartbeat (≤ 30 s). | Payload includes `"vbat_mv":NNNN`. Without the divider, `NNNN` is < 500. |
+| 1b.2 | Check the battery row in the Tuning panel. | If divider wired: shows `🔋 X.XX V (≈ NN %)` with green/amber/red colour. If not: shows `🔋 — (divider not wired?)` in muted grey. |
+| 1b.3 | Click **Query Battery** in the Actions block. | Ack footer: `✓ action:query_vbat vbat_mv=NNNN @ HH:MM:SS` (green tick). Status republishes ~immediately — the battery row updates without waiting for the next heartbeat. |
+| 1b.4 | **DMM cross-check** (divider required). Measure TP4056 OUT+ to GND with a known-good multimeter. | Reading should match the dashboard's mV value within ±50 mV. Most ESP32s have factory-calibrated eFuse Vref so the delta is typically < 30 mV. |
+| 1b.5 | If delta > 50 mV: apply the trim. Example for firmware reading 3920 mV vs DMM 3850 mV → offset = −70. | `mosquitto_pub -h $H -t lightning/as3935/cmd -m '{"set":"vbat_offset_mv","value":-70}'` — ack green, panel battery row updates within ~200 ms, `offset −70 mV` appears at the right edge of the row. NVS-persisted (survives reboot). |
+| 1b.6 | Reboot the ESP32 (`{"action":"reboot"}` or power-cycle). | Battery reading returns to within ±10 mV of the pre-reboot value (offset persists). Confirms NVS round-trip for the new key. |
+| 1b.7 | **Threshold colour check** (no hardware needed — just observe). | Battery rendering: ≥ 3.90 V green, 3.70–3.90 V amber, < 3.70 V red. If your battery happens to sit in one band, you can verify other bands by temporarily setting `vbat_offset_mv` to push the reading across thresholds. Remember to reset it afterwards. |
+
 ### Phase 2 — Events panel via TEST injects
 
 In the Node-RED editor (not the dashboard), open the **AS3935 Bridge** tab.
@@ -232,8 +257,8 @@ After any panel edit + `python3 nodered/build-flow.py` + re-import:
 |-------|-----------|---------|
 | `lightning/as3935/cmd` | publish → ESP32 | Send a tuning command |
 | `lightning/as3935/cmd/ack` | ESP32 → subscribe | One-line ack/error |
-| `lightning/as3935/status` | ESP32 → subscribe (retained) | Full state |
-| `lightning/as3935/hb` | ESP32 → subscribe (retained) | uptime + counters |
+| `lightning/as3935/status` | ESP32 → subscribe (retained) | Full state — incl. `vbat_mv` + `vbat_offset_mv` (v0.3.0) |
+| `lightning/as3935/hb` | ESP32 → subscribe (retained) | uptime + counters + `vbat_mv` (v0.3.0) |
 | `lightning/as3935` | ESP32 → subscribe | lightning/disturber/noise events |
 | `lightning/as3935/last_event` | ESP32 → subscribe (retained) | Latest event with `ts_epoch_ms` — backs the Events panel's Last Event card across restart |
 
@@ -258,6 +283,7 @@ After any panel edit + `python3 nodered/build-flow.py` + re-import:
 | `min_num_lightning` | 1 / 5 / 9 / 16 | Strikes before IRQ asserts |
 | `afe_gb` | `"indoor"` / `"outdoor"` | Analog front-end gain |
 | `modem_sleep` | `"max"` / `"min"` | WiFi modem sleep aggressiveness |
+| `vbat_offset_mv` | −500 .. +500 | Per-chip Vref trim for the battery ADC. Add this many millivolts to every `vbat_mv` reading. Most ESP32s need 0 or close to it. |
 
 ### Actions
 
@@ -265,6 +291,7 @@ After any panel edit + `python3 nodered/build-flow.py` + re-import:
 |--------|--------|
 | `republish_status` | Re-publish retained status |
 | `calibrate_tun_cap` | ~35 s LCO sweep, picks best cap, persists |
+| `query_vbat` | One-shot fresh battery reading; acks `action:query_vbat vbat_mv=NNNN` and republishes status so the dashboard updates atomically |
 | `reboot` | `ESP.restart()` |
 | `factory_reset_wifi` | Erase WiFi creds, restart into captive portal |
 

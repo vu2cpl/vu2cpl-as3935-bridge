@@ -7,6 +7,10 @@
 //   - on-device TUN_CAP calibration (port of as3935_tune.py)
 //   - WiFi modem sleep (WIFI_PS_MAX_MODEM by default)
 //   - bounded MQTT reconnect + no-publish watchdog → ESP.restart()
+// v0.3.0 adds:
+//   - battery voltage telemetry on GPIO 34 (ADC1_CH6) via 1:2 divider,
+//     published as vbat_mv on status + hb, queryable via cmd action,
+//     per-chip Vref delta correctable via vbat_offset_mv NVS tunable
 //
 // Any divergence from the Python daemon's status/hb shape breaks the
 // Node-RED Lightning Antenna Protector flow — extend, don't rename.
@@ -19,6 +23,7 @@
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <esp_log.h>
+#include <esp_adc_cal.h>
 #include <time.h>
 
 // ── Broker / portal ──────────────────────────────────────────────────────
@@ -36,6 +41,16 @@ constexpr int PIN_I2C_SDA     = 21;
 constexpr int PIN_I2C_SCL     = 22;
 constexpr int PIN_BOOT_BUTTON = 0;
 constexpr uint32_t BOOT_HOLD_MS = 3000;
+
+// Battery voltage divider on ADC1_CH6 (GPIO 34, input-only, WiFi-safe).
+// External 100 kΩ + 100 kΩ divider from BAT+ to GND, tap to PIN_VBAT.
+// Without the divider the pin floats and the reading is meaningless —
+// the dashboard renders whatever comes out, so a missing divider is
+// visually obvious (typically <100 mV at the pin → <200 mV reported).
+constexpr int      PIN_VBAT             = 34;
+constexpr int      VBAT_DIVIDER_RATIO   = 2;   // R1 == R2
+constexpr int      VBAT_SAMPLES         = 32;
+constexpr uint32_t VBAT_VREF_DEFAULT_MV = 1100;  // used if eFuse Vref absent
 
 // ── MQTT topics ──────────────────────────────────────────────────────────
 constexpr const char* TOPIC_EVENT      = "lightning/as3935";
@@ -86,6 +101,7 @@ struct Tunables {
     bool    mask_dist         = false;
     bool    indoor            = false;   // false = outdoor
     bool    modem_sleep_max   = true;    // WIFI_PS_MAX_MODEM
+    int16_t vbat_offset_mv    = 0;       // ±500 mV trim for per-chip Vref delta
 };
 Tunables tun;
 
@@ -99,10 +115,18 @@ constexpr const char* NVS_K_MIN_LT  = "min_lt";
 constexpr const char* NVS_K_MASK    = "mask_dist";
 constexpr const char* NVS_K_INDOOR  = "indoor";
 constexpr const char* NVS_K_PS_MAX  = "ps_max";
+constexpr const char* NVS_K_VBAT_OFFSET = "vbat_off_mv";
 
 // ── Runtime state ────────────────────────────────────────────────────────
 WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);
+
+// ADC calibration handle for the battery divider. Characterised once at
+// boot in vbatInit(). esp_adc_cal_characterize() reads eFuse Vref if
+// the chip was factory-calibrated (most ESP32s are) and falls back to
+// VBAT_VREF_DEFAULT_MV otherwise.
+esp_adc_cal_characteristics_t adcCalVbat;
+bool adcCalReady = false;
 
 struct Counters { uint32_t lightning = 0, disturber = 0, noise = 0, irq = 0; };
 Counters counters;
@@ -202,6 +226,7 @@ void loadTunables() {
     tun.mask_dist         = p.getBool (NVS_K_MASK,    tun.mask_dist);
     tun.indoor            = p.getBool (NVS_K_INDOOR,  tun.indoor);
     tun.modem_sleep_max   = p.getBool (NVS_K_PS_MAX,  tun.modem_sleep_max);
+    tun.vbat_offset_mv    = p.getShort(NVS_K_VBAT_OFFSET, tun.vbat_offset_mv);
     p.end();
 }
 void saveTunables() {
@@ -215,6 +240,7 @@ void saveTunables() {
     p.putBool (NVS_K_MASK,    tun.mask_dist);
     p.putBool (NVS_K_INDOOR,  tun.indoor);
     p.putBool (NVS_K_PS_MAX,  tun.modem_sleep_max);
+    p.putShort(NVS_K_VBAT_OFFSET, tun.vbat_offset_mv);
     p.end();
 }
 
@@ -253,6 +279,45 @@ void as3935Init() {
 
     uint8_t pending = as3935Read(REG_INT) & 0x0F;
     Serial.printf("[as3935] cleared pending INT: 0x%X\n", pending);
+}
+
+// ── Battery voltage (ADC on GPIO 34) ─────────────────────────────────────
+// 1:2 external divider (100 kΩ + 100 kΩ) brings 18650 voltage range
+// (3.0–4.2 V) into the ADC's linear region at 11 dB attenuation.
+// Without the divider, GPIO 34 floats and readings are meaningless; the
+// dashboard will show ~0 V and the operator immediately knows the
+// hardware mod hasn't been done.
+//
+// esp_adc_cal_characterize() uses the eFuse-stored Vref if present
+// (most ESP32s are factory-calibrated, ~30 mV typical delta from
+// nominal 1100 mV). If not present, it falls back to the supplied
+// default — readings will be ±50 mV off, correctable via the
+// vbat_offset_mv NVS tunable.
+void vbatInit() {
+    analogReadResolution(12);
+    analogSetPinAttenuation(PIN_VBAT, ADC_11db);
+    esp_adc_cal_value_t src = esp_adc_cal_characterize(
+        ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12,
+        VBAT_VREF_DEFAULT_MV, &adcCalVbat);
+    adcCalReady = true;
+    const char* srcStr =
+        (src == ESP_ADC_CAL_VAL_EFUSE_VREF)  ? "eFuse Vref" :
+        (src == ESP_ADC_CAL_VAL_EFUSE_TP)    ? "eFuse two-point" :
+        (src == ESP_ADC_CAL_VAL_DEFAULT_VREF)? "default Vref" : "?";
+    Serial.printf("[vbat] ADC characterised, cal source: %s\n", srcStr);
+}
+
+// Returns battery voltage in millivolts, including the NVS-trimmed
+// offset. Averages VBAT_SAMPLES samples to suppress ADC noise.
+uint32_t readVbat_mV() {
+    if (!adcCalReady) return 0;
+    uint32_t acc = 0;
+    for (int i = 0; i < VBAT_SAMPLES; i++) acc += analogRead(PIN_VBAT);
+    uint32_t raw = acc / VBAT_SAMPLES;
+    uint32_t mv_at_pin = esp_adc_cal_raw_to_voltage(raw, &adcCalVbat);
+    int32_t mv = (int32_t)mv_at_pin * VBAT_DIVIDER_RATIO + tun.vbat_offset_mv;
+    if (mv < 0) mv = 0;
+    return (uint32_t)mv;
 }
 
 // ── WiFi / portal ────────────────────────────────────────────────────────
@@ -366,6 +431,8 @@ void publishStatus(const char* event) {
     doc["min_num_lightning"] = minNumMap[tun.min_num_lightning & 0x03];
     doc["afe_gb"]            = tun.indoor ? "indoor" : "outdoor";
     doc["modem_sleep"]       = tun.modem_sleep_max ? "max" : "min";
+    doc["vbat_mv"]           = readVbat_mV();
+    doc["vbat_offset_mv"]    = tun.vbat_offset_mv;
     // Back-compat aliases for any subscriber that still reads the Python-style keys.
     doc["noise_floor"]       = tun.nf;
     doc["antenna"]           = tun.indoor ? "indoor" : "outdoor";
@@ -383,12 +450,14 @@ void publishStatus(const char* event) {
 }
 void publishHeartbeat() {
     char ts[24]; isoNow(ts, sizeof(ts));
-    char buf[256];
+    char buf[320];
     snprintf(buf, sizeof(buf),
         "{\"alive\":true,\"ts\":\"%s\",\"uptime_s\":%lu,\"rssi\":%d,"
+        "\"vbat_mv\":%lu,"
         "\"counters\":{\"lightning\":%lu,\"disturber\":%lu,"
         "\"noise\":%lu,\"irq\":%lu}}",
         ts, (unsigned long)uptimeSeconds(), WiFi.RSSI(),
+        (unsigned long)readVbat_mV(),
         (unsigned long)counters.lightning, (unsigned long)counters.disturber,
         (unsigned long)counters.noise,     (unsigned long)counters.irq);
     if (mqtt.publish(TOPIC_HB, buf, true)) {
@@ -511,6 +580,16 @@ bool handleSet(const char* key, JsonVariant value, char* err, size_t errlen) {
         else if (s && strcmp(s, "min") == 0) tun.modem_sleep_max = false;
         else { snprintf(err, errlen, "modem_sleep must be 'max' or 'min'"); return false; }
         applyModemSleep();
+    } else if (strcmp(key, "vbat_offset_mv") == 0) {
+        // Per-chip Vref trim. ±500 mV bracket is generous — eFuse-calibrated
+        // chips need <50 mV typically; the wider range accommodates uncalibrated
+        // chips and the small drift from the divider resistors' ±1% tolerance.
+        int v = value.as<int>();
+        if (v < -500 || v > 500) {
+            snprintf(err, errlen, "vbat_offset_mv out of range -500..500");
+            return false;
+        }
+        tun.vbat_offset_mv = (int16_t)v;
     } else {
         snprintf(err, errlen, "unknown key: %s", key);
         return false;
@@ -540,6 +619,18 @@ void handleAction(const char* action) {
         WiFiManager wm;
         wm.resetSettings();
         ESP.restart();
+    } else if (strcmp(action, "query_vbat") == 0) {
+        // One-shot snapshot — useful when the dashboard wants a fresh reading
+        // outside the heartbeat cadence (e.g. after solar panel inspection).
+        // Republishes the full status so the meta + vbat row both update
+        // atomically; the ack carries the mV value as well for callers that
+        // only want one line back.
+        uint32_t mv = readVbat_mV();
+        char ackbuf[80];
+        snprintf(ackbuf, sizeof(ackbuf), "action:query_vbat vbat_mv=%lu",
+                 (unsigned long)mv);
+        publishAck(true, ackbuf);
+        publishStatus("ready");
     } else {
         char err[64]; snprintf(err, sizeof(err), "unknown action: %s", action);
         publishAck(false, "action:?", err);
@@ -661,15 +752,20 @@ void setup() {
 
     loadTunables();
     Serial.printf("[nvs] nf=%u wdth=%u srej=%u tun_cap=%u mask=%d "
-                  "min_lt=%u indoor=%d ps_max=%d\n",
+                  "min_lt=%u indoor=%d ps_max=%d vbat_off=%d\n",
                   tun.nf, tun.wdth, tun.srej, tun.tun_cap, tun.mask_dist,
-                  tun.min_num_lightning, tun.indoor, tun.modem_sleep_max);
+                  tun.min_num_lightning, tun.indoor, tun.modem_sleep_max,
+                  tun.vbat_offset_mv);
 
     checkBootButtonForReset();
 
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     pinMode(PIN_AS3935_IRQ, INPUT);
     attachInterrupt(digitalPinToInterrupt(PIN_AS3935_IRQ), onAs3935Irq, RISING);
+
+    // ADC characterisation runs before WiFi to keep it simple — eFuse Vref
+    // doesn't need network. After this, readVbat_mV() is safe to call.
+    vbatInit();
 
     wifiSetup();
     applyModemSleep();

@@ -109,6 +109,84 @@ move it into the IP65 enclosure.
 > B+/B− and will eventually kill your 18650 by letting it discharge
 > below ~2.5 V.
 
+### Battery voltage divider (v0.3.0+, required for outdoor deploy)
+
+Hardware add-on so the firmware can publish `vbat_mv` over MQTT and
+the dashboard can show 🔋 voltage + a derived %SOC. Without this
+mod the firmware still boots and runs — it just reports ~0 V for
+the battery, which is the visual cue that the divider isn't wired.
+
+```
+                        TP4056 OUT+ ──┬── ESP32 VIN  (existing wire)
+                                      │
+                                      │
+                            R1 = 100 kΩ
+                                      │
+                                      ├────┬─── ESP32 GPIO 34   ← ADC tap
+                                      │    │
+                            R2 = 100 kΩ   C1 = 100 nF
+                                      │    │
+                                      └────┴─── ESP32 GND   (existing common)
+```
+
+| Component | Part | Notes |
+|-----------|------|-------|
+| R1, R2    | 100 kΩ 1/8 W 1% (metal film) | 1% so the divider ratio is predictable; ±5% carbon also works if you accept a ~50 mV reporting error |
+| C1        | 100 nF ceramic (X7R 50 V)    | Mounted **at the GPIO 34 pin**, not at the divider — it shores up the ADC's S/H input impedance |
+| Wire      | 22 AWG silicone | Short — keep the tap < 5 cm from the ESP32 |
+
+**Tap point.** Tap **from TP4056 OUT+** (which goes to ESP32 VIN),
+*not* from the battery's B+ directly. Reasons:
+
+- OUT+ = battery voltage *minus* the protection MOSFET's R<sub>DS(on)</sub>
+  drop (~20 mV at 100 mA, negligible) — close enough to true battery
+  voltage for monitoring.
+- B+ tapped directly would still read fine **except** during a
+  protection-IC trip (over-discharge / over-current / short) when
+  the MOSFET disconnects OUT from B. After a trip, B+ shows correct
+  battery voltage but the ESP32 is dead because OUT is disconnected
+  — so a B+ reading "looks fine" while the load can't see the
+  battery. OUT+ tap gives the operationally meaningful number.
+
+**Voltage range vs ADC linear region:**
+
+| Battery state | BAT+ voltage | Voltage at GPIO 34 (post-divider) |
+|---------------|--------------|-----------------------------------|
+| Full          | 4.20 V       | 2.10 V                            |
+| Nominal       | 3.70 V       | 1.85 V                            |
+| Low alarm     | 3.30 V       | 1.65 V                            |
+| Cutoff (DW01A) | 2.50 V      | 1.25 V                            |
+
+All four are inside the ESP32 ADC's linear region at 11 dB
+attenuation (~150 mV – 2.45 V). Below ~150 mV and above ~2.45 V the
+ADC pinches non-linearly and `esp_adc_cal_raw_to_voltage()` returns
+saturated values.
+
+**Bleed current.** R1 + R2 = 200 kΩ. At 4.2 V: 21 µA. Over 24 h
+that's 0.5 mWh — negligible against the 18650's ~10 Wh. Resistors
+that small don't load the protection IC enough to affect anything.
+
+**Why GPIO 34.** Input-only (so firmware can never accidentally
+drive it as an output), ADC1 (WiFi-safe — ADC2 reads return
+`ESP_ERR_TIMEOUT` while WiFi is active, which is always). Free on
+this board — no other peripheral uses it.
+
+**Calibration after install.** Solder the divider, flash v0.3.0,
+measure BAT+ with a known-good DMM, compare to the dashboard's
+`vbat_mv` reading. Typical delta: < 30 mV (most ESP32s have
+factory-calibrated eFuse Vref). If the delta is > 50 mV, set it via
+the `cmd` channel:
+
+```sh
+H=192.168.1.169
+# Example: firmware reports 3.92 V but DMM measures 3.85 V → offset = -70
+mosquitto_pub -h $H -t lightning/as3935/cmd \
+    -m '{"set":"vbat_offset_mv","value":-70}'
+```
+
+The offset persists in NVS and is also exposed on `/status` as a
+field for sanity-check.
+
 ---
 
 ## First-boot WiFi setup

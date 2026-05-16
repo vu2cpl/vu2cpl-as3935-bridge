@@ -7,6 +7,18 @@
 
 ## Status
 
+**v0.3.0 ready, 2026-05-17.** Battery voltage telemetry shipped:
+`vbat_mv` on `/hb` (every 30 s) and `/status` (on connect + every
+5 min), new `cmd` action `query_vbat` for one-shot fresh reading,
+new NVS tunable `vbat_offset_mv` (±500 mV) for per-chip Vref trim.
+Hardware add: 100 kΩ + 100 kΩ + 100 nF divider on GPIO 34
+(input-only ADC1 channel, WiFi-safe). Tested as a clean build
+(`pio run` succeeds, no warnings); flash + bench-verify against a
+DMM is the next physical step. Without the divider the firmware
+still boots and runs — it reports ~0 V, which is the visual cue
+that the mod isn't done yet. See
+[`WIRING.md § Battery voltage divider`](WIRING.md#battery-voltage-divider-v030-required-for-outdoor-deploy).
+
 **v0.2.0 live on the bench, 2026-05-12.** Firmware now exposes the
 full AS3935 register surface as a runtime MQTT control channel
 (`lightning/as3935/cmd` + `cmd/ack`), NVS-persisted across reboots,
@@ -63,15 +75,17 @@ broker, WiFi auto-rejoins via WiFiManager-saved creds. Retained status
 refreshes every 5 min.
 
 **Outstanding for v0.3.0+:**
+- **Solder the v0.3.0 battery divider, flash, bench-verify against
+  DMM, and set `vbat_offset_mv` if the delta is > 50 mV.** Hardware
+  per [`WIRING.md`](WIRING.md). Firmware already supports it as of
+  2026-05-17.
+- Shack-side Telegram alert when `vbat_mv` < 3400 (or operator-tunable
+  threshold) for two consecutive heartbeats — tracked in the
+  `vu2cpl-shack` repo, not here.
 - Verify modem-sleep current drop on the bench (expected ~30-50 mA avg
   vs the 100-200 mA measured at v0.1.1).
 - Power chain (TP4056 + 18650 + solar), with **panel mounted in sun**
   even if enclosure is in shade (long cable).
-- Battery voltage telemetry over MQTT (`vbat_mv` field on the heartbeat
-  payload, rendered as a row in the Tuning panel). Necessary for any
-  outdoor deploy — without it, the only way to know the battery state
-  is to physically open the enclosure. **Design note:** see
-  2026-05-15 entry at the bottom of this file.
 - Enclosure seal, field install with in-situ TUN_CAP re-tune (now
   reachable from the shack via `{"action":"calibrate_tun_cap"}` — no
   enclosure-opening needed).
@@ -390,6 +404,112 @@ The example flow source remains `nodered/build-flow.py`. JSON in
 `nodered/as3935-control-flow.json` is generated — never hand-edit.
 Run `python3 nodered/build-flow.py` to regenerate after any panel
 edit. Re-import or hot-reload in Node-RED to see the change.
+
+---
+
+## 2026-05-17 — v0.3.0 implemented: battery voltage telemetry
+
+The design note from 2026-05-15 is now code. Build succeeds clean
+(`pio run` — RAM 14.6 %, Flash 72.2 %, no warnings); not yet flashed
+to a live ESP32 because the GPIO 34 divider hasn't been soldered on
+the bench rig. That's the next physical step.
+
+### What shipped
+
+Firmware (`src/main.cpp`, `platformio.ini`):
+
+- New constants `PIN_VBAT = 34`, `VBAT_DIVIDER_RATIO = 2`,
+  `VBAT_SAMPLES = 32`, `VBAT_VREF_DEFAULT_MV = 1100`.
+- `vbatInit()` calls `esp_adc_cal_characterize()` once at boot,
+  reads the eFuse Vref source (logs whether it's eFuse-Vref,
+  eFuse-two-point, or default-Vref fallback).
+- `readVbat_mV()` averages 32 samples, runs them through
+  `esp_adc_cal_raw_to_voltage()`, multiplies by the divider ratio,
+  adds the NVS-trimmed offset, clamps to non-negative.
+- `vbat_offset_mv` (int16, ±500 mV range) added to `Tunables` +
+  NVS load/save (new key `NVS_K_VBAT_OFFSET = "vbat_off_mv"`).
+- `handleSet("vbat_offset_mv", …)` with range check.
+- `handleAction("query_vbat")` → ack carries `vbat_mv=NNNN` and the
+  full status is republished so the dashboard updates atomically.
+- `publishStatus()` includes `vbat_mv` and `vbat_offset_mv`.
+- `publishHeartbeat()` includes `vbat_mv` (buf bumped from 256 → 320).
+- `FIRMWARE_VERSION` → `"v0.3.0"` in `platformio.ini`.
+
+Hardware mod (documented in [`WIRING.md`](WIRING.md), not yet wired
+on the bench):
+
+- 100 kΩ + 100 kΩ resistive divider from **TP4056 OUT+** (not B+ —
+  rationale captured in the WIRING note) to GPIO 34, with a 100 nF
+  cap at the pin.
+- Bleed current 21 µA at 4.2 V → 0.5 mWh/day, trivial.
+
+Dashboard (`nodered/build-flow.py`, regenerated to
+`as3935-control-flow.json`):
+
+- New 🔋 row in the Tuning panel between Calib and Tunables. Renders
+  `🔋 X.XX V (≈ NN %)` with green ≥ 3.90 V / amber 3.70–3.90 V /
+  red < 3.70 V. Shows `(divider not wired?)` when reading < 500 mV.
+  Surfaces `vbat_offset_mv` on the right edge when non-zero.
+- New **Query Battery** action button in the Actions block.
+- SOC % computed client-side from a piecewise-linear LUT
+  (4.20→100, 3.95→80, 3.85→60, 3.75→40, 3.65→20, 3.50→10, 3.30→0).
+  Firmware only sends mV — the % is dashboard-derived to keep the
+  firmware dumb about the battery chemistry curve.
+- Reads `hb.vbat_mv` first (30 s cadence), falls back to
+  `state.vbat_mv` from `/status` (5 min cadence) when no hb yet.
+
+Docs:
+
+- [`WIRING.md`](WIRING.md) — full schematic, BOM table (1% metal
+  film resistors recommended), tap-point rationale (OUT+ not B+),
+  voltage/ADC linear-region table, calibration recipe with
+  `mosquitto_pub` one-liner.
+- [`README.md`](README.md) — v0.3.0 Status entry, topic table
+  bumped to mention `vbat_mv` + `vbat_offset_mv`, panel feature
+  list updated.
+- [`nodered/README.md`](nodered/README.md) — battery row + Query
+  Battery documented, new Phase 1b in the test plan (7 steps
+  covering "with and without divider" cases, DMM cross-check,
+  offset trim, NVS persistence, threshold colour bands).
+
+### Design decisions, codified
+
+- **Always publish `vbat_mv` even without the divider.** Decided
+  against gating with an enable flag — bench operator sees a
+  glaringly wrong reading (~0 V on the dashboard, "(divider not
+  wired?)" hint) and immediately knows what's missing. Hidden
+  gating would let operators forget the divider and not realise
+  for hours.
+- **Tap from TP4056 OUT+, not battery B+.** Captured in WIRING.md
+  with the protection-IC-trip rationale (B+ tap reads "fine" while
+  load is dead — operationally misleading).
+- **Piecewise SOC in the dashboard, not the firmware.** Keeps
+  firmware ignorant of the LUT (battery chemistry could change —
+  LiFePO4 vs Li-ion have different curves). One place to update.
+- **No `vbat_pct` field in MQTT.** Same rationale — let the
+  consumer compute SOC from mV. The bridge stays a sensor.
+- **`vbat_offset_mv` range = ±500 mV.** Wider than the typical
+  eFuse delta (< 30 mV) to absorb 1% resistor tolerance stacking
+  plus a small Vref miss. If anyone needs more than ±500 mV, the
+  hardware is wrong — fix the divider rather than trim further in
+  software.
+- **`pio run` clean build before commit.** Caught zero issues this
+  time, but the policy stays: any firmware edit gets a `pio run`
+  before push.
+
+### Open
+
+- Bench validation against DMM still pending — the firmware path
+  has been compiler-verified but not hardware-verified. The first
+  real reading might surface a Vref miss requiring an offset, or
+  (unlikely) reveal that GPIO 34 has a bus conflict we missed.
+- Shack-side Telegram alert is a separate task in `vu2cpl-shack` —
+  spawned at the end of this session. Threshold and debounce
+  policy live there, not here.
+- The 1 Hz `Xs ago` ticker pattern (used in the Events panel) is
+  not duplicated for the battery row — battery state changes on a
+  ~minutes timescale, freshness display isn't valuable. Heartbeat
+  cadence is the natural rhythm.
 
 ---
 

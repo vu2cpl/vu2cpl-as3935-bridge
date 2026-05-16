@@ -40,6 +40,18 @@ CSS = """\
 }
 #a35tune .calib{color:var(--muted); font-size:11px;
   font-family:var(--mono)}
+#a35tune .vbat{
+  font-family:var(--mono); font-size:13px;
+  display:flex; gap:10px; align-items:baseline;
+}
+#a35tune .vbat #a35vbat{font-weight:700}
+#a35tune .vbat.good #a35vbat{color:var(--green)}
+#a35tune .vbat.warn #a35vbat{color:var(--amber)}
+#a35tune .vbat.bad  #a35vbat{color:var(--red)}
+#a35tune .vbat.absent #a35vbat{color:var(--muted)}
+#a35tune .vbat .vbatpct{color:var(--text); font-size:11px}
+#a35tune .vbat .vbatoffset{color:var(--muted); font-size:10px;
+  margin-left:auto}
 #a35tune .tune{display:flex; flex-direction:column; gap:6px}
 #a35tune .trow{
   display:flex; align-items:center; gap:8px; font-size:12px;
@@ -106,6 +118,12 @@ HTML = """\
 
   <div class="card calib" id="a35calib">Calib: —</div>
 
+  <div class="card vbat" id="a35vbatcard">
+    <span id="a35vbat">🔋 —</span>
+    <span class="vbatpct" id="a35vbatpct"></span>
+    <span class="vbatoffset" id="a35vbatoff"></span>
+  </div>
+
   <div class="card tune">
     <div class="sect">Tunables</div>
     <div class="trow"><span class="lbl">NF</span>
@@ -153,6 +171,7 @@ HTML = """\
     <div class="sect" style="width:100%">Actions</div>
     <button class="primary" onclick="a35.action('calibrate_tun_cap')">Calibrate TUN_CAP (~35s)</button>
     <button onclick="a35.action('republish_status')">Republish Status</button>
+    <button onclick="a35.action('query_vbat')">Query Battery</button>
     <button class="warn" onclick="a35.confirm('Reboot the ESP32?', 'reboot')">Reboot ESP32</button>
     <button class="danger" onclick="a35.confirm('Erase stored WiFi creds and reboot into setup AP?', 'factory_reset_wifi')">Factory Reset WiFi</button>
   </div>
@@ -211,6 +230,58 @@ JS = """\
       cal.textContent =
         'Calib: TRCO=' + (state.calib_trco || '?')
         + ' · SRCO=' + (state.calib_srco || '?');
+    }
+
+    // Battery row. hb.vbat_mv lands every 30s (faster than the 5-min
+    // status republish); status.vbat_mv fills in on connect/republish.
+    // Prefer hb when both exist — it's fresher.
+    var mv = (hb && hb.vbat_mv != null) ? hb.vbat_mv : state.vbat_mv;
+    var vbcard = $('a35vbatcard');
+    var vbel   = $('a35vbat');
+    var vbpct  = $('a35vbatpct');
+    var vboff  = $('a35vbatoff');
+    if(vbcard && vbel){
+      if(mv == null){
+        vbel.textContent = '🔋 awaiting telemetry...';
+        vbcard.className = 'card vbat absent';
+        if(vbpct) vbpct.textContent = '';
+      } else if(mv < 500){
+        // Divider not wired (or no battery) — float read is <0.5 V.
+        vbel.textContent = '🔋 — (divider not wired?)';
+        vbcard.className = 'card vbat absent';
+        if(vbpct) vbpct.textContent = '';
+      } else {
+        var v = (mv / 1000).toFixed(2);
+        // Piecewise-linear SOC for an 18650.
+        // 4.20→100, 3.95→80, 3.85→60, 3.75→40, 3.65→20, 3.50→10, 3.30→0.
+        var pts = [[3300,0],[3500,10],[3650,20],[3750,40],
+                   [3850,60],[3950,80],[4200,100]];
+        var pct;
+        if(mv <= pts[0][0])               pct = 0;
+        else if(mv >= pts[pts.length-1][0]) pct = 100;
+        else {
+          for(var i=1;i<pts.length;i++){
+            if(mv <= pts[i][0]){
+              var a = pts[i-1], b = pts[i];
+              pct = a[1] + (b[1]-a[1]) * (mv-a[0]) / (b[0]-a[0]);
+              break;
+            }
+          }
+        }
+        vbel.textContent = '🔋 ' + v + ' V';
+        if(vbpct) vbpct.textContent = '(≈ ' + Math.round(pct) + ' %)';
+        // Colour thresholds: green ≥ 3.90 V, amber 3.70–3.90 V, red < 3.70 V.
+        var cls = (mv >= 3900) ? 'good'
+                : (mv >= 3700) ? 'warn'
+                : 'bad';
+        vbcard.className = 'card vbat ' + cls;
+      }
+    }
+    if(vboff){
+      vboff.textContent = (state.vbat_offset_mv != null
+        && state.vbat_offset_mv !== 0)
+        ? 'offset ' + (state.vbat_offset_mv>0?'+':'') + state.vbat_offset_mv + ' mV'
+        : '';
     }
     if(state.nf      != null && $('a35nf'))     $('a35nf').textContent = state.nf;
     if(state.wdth    != null && $('a35wdth'))   $('a35wdth').textContent = state.wdth;

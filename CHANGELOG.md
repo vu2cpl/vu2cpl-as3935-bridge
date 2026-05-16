@@ -6,6 +6,80 @@ the `fw` field of every `lightning/as3935/status` MQTT payload.
 
 ---
 
+## v0.3.0 — 2026-05-17
+
+Battery voltage telemetry over MQTT. Required for outdoor deploy —
+the operator needs to see battery state from the shack dashboard
+without opening the sealed enclosure.
+
+### Hardware mod (new)
+
+External 1:2 resistive divider feeding ADC1_CH6 (GPIO 34):
+
+- R1 = 100 kΩ from TP4056 OUT+ to GPIO 34
+- R2 = 100 kΩ from GPIO 34 to GND
+- C1 = 100 nF ceramic at the pin (S/H impedance shore-up)
+- Bleed current 21 µA at 4.2 V (~0.5 mWh/day, trivial)
+
+Full schematic + BOM + tap-point rationale (why OUT+ not B+) in
+[`WIRING.md`](WIRING.md). Without the divider the firmware still
+runs but reports ~0 V — visual cue the mod isn't done.
+
+### MQTT surface additions
+
+- `lightning/as3935/hb` now includes `"vbat_mv":NNNN` (every 30 s).
+- `lightning/as3935/status` now includes `"vbat_mv":NNNN` and
+  `"vbat_offset_mv":SS` (on connect + every 5 min).
+- New `cmd` action `{"action":"query_vbat"}` — fresh one-shot
+  reading. Acks with `cmd:"action:query_vbat vbat_mv=NNNN"` and
+  republishes status for atomic dashboard update.
+- New `cmd` tunable `{"set":"vbat_offset_mv","value":-500..500}` —
+  per-chip Vref trim, persisted to NVS under key `vbat_off_mv`.
+
+### Firmware (`src/main.cpp`)
+
+- New `vbatInit()` calls `esp_adc_cal_characterize()` once at boot;
+  logs the calibration source (eFuse-Vref / eFuse-two-point /
+  default-Vref fallback).
+- New `readVbat_mV()` averages 32 ADC samples, runs them through
+  `esp_adc_cal_raw_to_voltage()`, multiplies by `VBAT_DIVIDER_RATIO`
+  (= 2), adds NVS-trimmed `vbat_offset_mv`, clamps non-negative.
+- `Tunables` struct gains `int16_t vbat_offset_mv = 0`; NVS load /
+  save extended; `handleSet` gains case + range check; `handleAction`
+  gains `query_vbat`.
+- `publishHeartbeat` buffer grew 256 → 320 bytes to fit the new field.
+- `vbatInit()` runs from `setup()` before WiFi (no network needed
+  for eFuse Vref read).
+
+### Dashboard (`nodered/build-flow.py`)
+
+- New 🔋 row between Calib and Tunables: `🔋 X.XX V (≈ NN %)`,
+  green ≥ 3.90 V, amber 3.70–3.90 V, red < 3.70 V. Shows
+  `(divider not wired?)` when reading < 500 mV. Right edge shows
+  `offset ±NN mV` when `vbat_offset_mv != 0`.
+- New **Query Battery** action button next to Republish Status.
+- SOC % computed client-side from a piecewise-linear LUT (firmware
+  doesn't carry battery chemistry knowledge — easier to update one
+  place when the chemistry changes).
+
+### Why not a fuel-gauge IC
+
+MAX17048 / DS2438 / similar would give true %SOC via coulomb
+counting. Voltage-only is "good enough" for a sensor node — catches
+the failure modes that matter (dead panel, cell drift, cold-weather
+drop) without adding I²C parts to the bus. If field experience
+shows it's misleading often, fuel-gauge IC is a clean drop-in
+upgrade — wire changes are zero (sits on the existing I²C bus),
+firmware reads SOC from the chip instead of doing ADC math.
+
+### Build verification
+
+`pio run` clean — no warnings, RAM 14.6 % (47964 / 327680), Flash
+72.2 % (946021 / 1310720). Bench-flash + DMM cross-check is the
+next physical step.
+
+---
+
 ## Post-v0.2.0 — retained `last_event` topic for dashboard rehydration — 2026-05-14
 
 New retained MQTT topic so the shack's Node-RED Master Dashboard can
