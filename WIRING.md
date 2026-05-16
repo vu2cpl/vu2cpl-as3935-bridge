@@ -123,11 +123,20 @@ the battery, which is the visual cue that the divider isn't wired.
                             R1 = 100 kΩ
                                       │
                                       ├────┬─── ESP32 GPIO 34   ← ADC tap
-                                      │    │
+                                      │    │      (silkscreen: G34)
                             R2 = 100 kΩ   C1 = 100 nF
                                       │    │
                                       └────┴─── ESP32 GND   (existing common)
 ```
+
+> **Read the silkscreen carefully — GPIO 34 is `G34` on this board**,
+> not `A0`. ESP32 NodeMCU boards label ADC pins by GPIO number; the
+> `A0` convention is ESP8266-only. On the bench's WROOM-32 38-pin
+> module `G34` is the **5th pin down on the column opposite the USB
+> connector**, just below `VN`. Sister cluster of input-only ADC1
+> pins on the same edge: `VP` (= GPIO 36) · `VN` (= GPIO 39) ·
+> **`G34`** · `G35`. Other clones may print it as `IO34`, `D34`, or
+> bare `34` — all the same pin. The number is what matters.
 
 | Component | Part | Notes |
 |-----------|------|-------|
