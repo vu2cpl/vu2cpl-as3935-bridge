@@ -141,9 +141,10 @@ strike source.
 
 **Outstanding** (per [`HANDOVER.md`](HANDOVER.md) for full detail):
 verify modem-sleep current drop, build the power chain
-(TP4056 + 18650 + solar), seal the enclosure and do the field install
-with in-situ TUN_CAP recalibration over MQTT, then eventually
-deep-sleep + EXT0 wake on the AS3935 IRQ.
+(TP4056 + 18650 + solar + battery voltage telemetry on GPIO 34 →
+`vbat_mv` in the heartbeat payload), seal the enclosure and do the
+field install with in-situ TUN_CAP recalibration over MQTT, then
+eventually deep-sleep + EXT0 wake on the AS3935 IRQ.
 
 See [`CHANGELOG.md`](CHANGELOG.md) for version-by-version history.
 

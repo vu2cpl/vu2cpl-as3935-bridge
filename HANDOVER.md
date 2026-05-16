@@ -67,6 +67,11 @@ refreshes every 5 min.
   vs the 100-200 mA measured at v0.1.1).
 - Power chain (TP4056 + 18650 + solar), with **panel mounted in sun**
   even if enclosure is in shade (long cable).
+- Battery voltage telemetry over MQTT (`vbat_mv` field on the heartbeat
+  payload, rendered as a row in the Tuning panel). Necessary for any
+  outdoor deploy — without it, the only way to know the battery state
+  is to physically open the enclosure. **Design note:** see
+  2026-05-15 entry at the bottom of this file.
 - Enclosure seal, field install with in-situ TUN_CAP re-tune (now
   reachable from the shack via `{"action":"calibrate_tun_cap"}` — no
   enclosure-opening needed).
@@ -385,6 +390,177 @@ The example flow source remains `nodered/build-flow.py`. JSON in
 `nodered/as3935-control-flow.json` is generated — never hand-edit.
 Run `python3 nodered/build-flow.py` to regenerate after any panel
 edit. Re-import or hot-reload in Node-RED to see the change.
+
+---
+
+## 2026-05-15 — v0.3.0 design note: battery voltage telemetry
+
+Pre-implementation design captured before the field-deploy power
+chain is built. No code yet — this note exists so future-Manoj has
+the schematic + register choices + rationale in one place when
+v0.3.0 work begins.
+
+### Goal
+
+Know the 18650's voltage from the shack dashboard. Once the bridge
+is sealed in an outdoor enclosure under a small solar panel, the
+only way to spot a dying cell, a dead panel, or a charge controller
+that's gone wrong is to physically retrieve the box. A `vbat_mv`
+field on the existing heartbeat payload + a panel row makes it a
+five-second check from the dashboard.
+
+True %SOC needs coulomb counting (MAX17048 or similar) — voltage
+alone is approximate, especially in the flat 3.7–3.9 V region where
+most of the 18650's energy lives. Approximate is fine for a sensor
+node — we want a "battery is healthy / dying / dead" indicator,
+not a fuel gauge for trip planning.
+
+### Hardware
+
+- **ADC1 channel 6 = GPIO 34.** Input-only (so nothing can ever
+  drive it as an output by accident), ADC1 (WiFi-safe — ADC2 is
+  unusable with WiFi active), free on this board.
+- **1:2 resistive divider** from BAT+ to GPIO 34:
+  - `R1 = 100 kΩ` from BAT+ to ADC pin
+  - `R2 = 100 kΩ` from ADC pin to GND
+  - 4.2 V → 2.10 V at pin · 3.0 V → 1.50 V at pin
+  - Both inside the ADC's linear region at `ADC_ATTEN_DB_11`.
+  - Bleed current 21 µA at 4.2 V → ~0.18 mAh/day → ~0.5 mWh/day,
+    trivial vs the 18650's ~10 Wh.
+- **100 nF cap from GPIO 34 to GND, at the pin.** The ESP32's S/H
+  wants a low-impedance source; the divider alone is ~50 kΩ Thevenin
+  which the cap shores up.
+- **Tap point matters.** Tap **after** the TP4056 BAT+ output, not
+  before it — that's the cell voltage. If you tap the load side of
+  the TP4056's BAT-/OUT- chain (some modules have a separate OUT-),
+  you'll read 0 V when the protection MOSFET disconnects under
+  fault.
+
+### Firmware
+
+```cpp
+#include <esp_adc_cal.h>
+constexpr int PIN_VBAT_DIV = 34;
+constexpr int VBAT_DIVIDER_RATIO = 2;   // R1=R2 → ratio 2
+constexpr int VBAT_SAMPLES = 32;
+esp_adc_cal_characteristics_t adcCal;
+
+void vbatInit() {
+  analogReadResolution(12);
+  analogSetPinAttenuation(PIN_VBAT_DIV, ADC_11db);
+  esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11,
+                           ADC_WIDTH_BIT_12, 1100, &adcCal);
+}
+
+uint32_t readVbat_mV() {
+  uint32_t acc = 0;
+  for (int i = 0; i < VBAT_SAMPLES; i++) acc += analogRead(PIN_VBAT_DIV);
+  uint32_t raw = acc / VBAT_SAMPLES;
+  uint32_t mv_at_pin = esp_adc_cal_raw_to_voltage(raw, &adcCal);
+  return mv_at_pin * VBAT_DIVIDER_RATIO;
+}
+```
+
+Hook `vbatInit()` into `setup()` after WiFi connects (eFuse Vref
+calibration doesn't need WiFi, but co-locating with other one-shot
+init is tidier). Call `readVbat_mV()` from `publishHeartbeat()` and
+add the field:
+
+```cpp
+doc["vbat_mv"] = readVbat_mV();         // e.g. 3870
+```
+
+The status payload could also carry it (snapshot at publish time)
+but heartbeat at 30 s cadence is the right frequency — much faster
+than the battery state can meaningfully change.
+
+### Wire protocol
+
+Single new key in `lightning/as3935/hb`:
+
+```json
+{
+  "event": "heartbeat",
+  "ts": "...",
+  "uptime_s": 12345,
+  "rssi": -62,
+  "vbat_mv": 3870,
+  "counters": { ... }
+}
+```
+
+Optional second key `vbat_pct` derived from a piecewise linear LUT
+(4.20 V→100 %, 3.95 V→80 %, 3.85 V→60 %, 3.75 V→40 %, 3.65 V→20 %,
+3.50 V→10 %, 3.30 V→0 %) — but the dashboard can compute that
+client-side just as well. Keep firmware sending mV only; render the
+% on the Node-RED side.
+
+### Dashboard side
+
+Single row added to the Tuning panel's meta block (where FW / IP /
+RSSI / uptime live):
+
+```
+FW v0.3.0 · IP 192.168.1.155 · RSSI -62 dBm · up 3h 17m
+🔋 3.87 V (≈ 78 %)
+```
+
+Colour cues:
+- ≥ 3.90 V → green
+- 3.70–3.90 V → amber
+- < 3.70 V → red (with the heartbeat counter going red too —
+  same as the existing offline LED)
+
+Implementation: extend the `hb` watcher in `build-flow.py`'s
+tuning-panel JS — a few lines around the existing RSSI/uptime
+renderer.
+
+### Calibration
+
+Per-chip variance is the main accuracy gotcha:
+
+1. After hardware bring-up, measure BAT+ with a known-good DMM and
+   note the firmware-reported `vbat_mv`.
+2. If the delta is > 50 mV, write a `vbat_offset_mv` to NVS (new
+   tunable, settable via the existing `cmd` channel) and subtract
+   it inside `readVbat_mV()`.
+3. Most ESP32s have factory-calibrated eFuse Vref, so the delta is
+   usually < 30 mV and step 2 is skipped.
+
+### Why not a fuel gauge IC
+
+MAX17048 / DS2438 / similar would give true %SOC via coulomb
+counting plus battery-model curve fitting. They'd sit on the
+existing I²C bus (no extra pins). Reasons not to go there for
+v0.3.0:
+
+- The sensor node draws ~30–150 mA depending on modem-sleep
+  state — a tiny range vs the 18650's ~3000 mAh capacity. Coarse
+  voltage monitoring catches the cases that matter (dead panel,
+  cell drift, cold-weather drop).
+- Adding the IC adds a part, footprint, and a second I²C
+  address to track. The bridge is already at one I²C device
+  (AS3935 @ 0x03); two-device buses introduce their own bring-up
+  gotchas.
+- Voltage telemetry can be added to v0.3.0 in an evening; a fuel
+  gauge add is a weekend project. Ship the cheap version first.
+
+If field experience shows voltage-only is misleading often enough
+to matter, MAX17048 is a clean upgrade in a later revision — wire
+changes are zero, firmware reads SOC from the chip instead of doing
+its own ADC math.
+
+### Out of scope for this design note
+
+- Solar panel sizing, MPPT, or charge-controller selection — the
+  TP4056 module + a 1–2 W panel is the bench plan; field validation
+  pending.
+- Low-voltage cutoff. The TP4056 module's protection IC handles
+  that in hardware (typically at 2.5 V, well below the firmware's
+  3.0 V "battery low" threshold). Firmware doesn't need to act on
+  battery voltage beyond reporting it.
+- Deep-sleep battery accounting — separate concern, comes in with
+  the EXT0-wake work (open question E above).
 
 ---
 
