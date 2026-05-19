@@ -72,9 +72,6 @@ move it into the IP65 enclosure.
 | **SDA**    | **`D`**         | GPIO21            | blue                   |
 | **SCL**    | **`C`**         | GPIO22            | yellow                 |
 | IRQ        | `IRQ`           | GPIO27            | green                  |
-| SI         | `SI`            | VCC (or 3V3)      | — (jumper / solder)    |
-| A0         | `A0`            | GND               | — (jumper / solder)    |
-| A1         | `A1`            | GND               | — (jumper / solder)    |
 | MOSI / MISO / CS | (NC on I²C-mode boards) | — (NC) | leave unconnected      |
 
 > **Read the silkscreen carefully — the I²C pins are abbreviated.** On
@@ -83,12 +80,14 @@ move it into the IP65 enclosure.
 > (not `SCL`). It's an easy 30-minute debug detour. `D → GPIO21`,
 > `C → GPIO22`.
 
-> **Why SI=VCC and A0=A1=GND:** the CJMCU-3935 / GY-AS3935 boards
-> ship as SPI by default. Tying SI high selects I²C mode; tying A0
-> and A1 low selects I²C address `0x03`, which is what the firmware
-> expects (`AS3935_I2C_ADDR = 0x03` in `main.cpp`). If your specific
-> module already has these as solder jumpers, just verify they're set
-> the right way — no extra wires needed.
+> **Address-select switches (SI / A0 / A1) — leave at factory default.**
+> These are **on-board DIP / solder switches**, not wires you run to
+> the ESP32. The factory default position selects I²C mode + address
+> **`0x03`**, which is what the firmware expects
+> (`AS3935_I2C_ADDR = 0x03` in `main.cpp`). Don't touch them.
+> Sanity check after first power-on: if `[as3935] CFG0=0x00` or
+> `0xFF` keeps appearing on the serial monitor, one of the switches
+> has been flipped — power down, restore to default, retry.
 
 ### Power chain
 
