@@ -239,6 +239,112 @@ Before you seal anything:
 
 ---
 
+## Outdoor deployment — two-box topology (required)
+
+The bench rig (everything in one box, sensor on the same PCB
+cluster as the ESP32 + TP4056) **works fine indoors as a development
+setup**, but **fails as a deployed sensor** — the AS3935's
+ferrite-loop antenna picks up the ESP32's own digital switching
+activity (CPU at 240 MHz, WiFi TX bursts every status republish,
+CP2102 USB-serial harmonics, regulator transients) at higher field
+strength than a 5 km storm. The result is **false `lightning`
+events firing at ~1 km distance**, often correlated with the
+firmware's 5-min `STATUS_REPUBLISH_MS` WiFi transmit cycle.
+Documented from the field on 2026-06-28 — every successful AS3935
+field deployment in published write-ups uses some variant of this
+two-box pattern.
+
+The fix is structural — physical separation, not strictness tuning:
+
+```
+                  ┌─────────────────────────┐
+                  │  SENSOR BOX  (plastic)  │
+                  │                         │
+                  │   AS3935 module         │
+                  │   + optional 100 nF     │
+                  │     decoupling on VCC   │
+                  │                         │
+                  │   [ferrite antenna] ↕   │  ← vertical
+                  └────┬────┬────┬────┬─────┘
+                       │    │    │    │
+                       │   ≥ 10 cm cable away from
+                       │   anything else in the
+                       │   control box. Run the
+                       │   cable AWAY from the
+                       │   antenna, not over it.
+                       │
+                       │   4 conductors:
+                       │     VCC (3V3)
+                       │     GND
+                       │     SDA (D / GPIO 21)
+                       │     SCL (C / GPIO 22)
+                       │     IRQ (GPIO 27)
+                       ▼
+                  ┌─────────────────────────┐
+                  │  CONTROL BOX  (plastic) │
+                  │                         │
+                  │   ESP32 NodeMCU         │
+                  │   TP4056 + 18650 cell   │
+                  │   Battery divider       │
+                  │     (R1+R2+C1 → G34)    │
+                  │                         │
+                  │   NO antenna in here    │
+                  └─────────────────────────┘
+                  │
+                  ▼
+            (cable to solar panel)
+```
+
+**What goes in each box:**
+
+| Sensor box | Control box |
+|------------|-------------|
+| AS3935 module only | ESP32 NodeMCU |
+| Optional 100 nF VCC decoupling cap | TP4056 + 18650 |
+| Nothing else electrically active | Battery divider |
+|                                   | All other wiring |
+
+**Inter-box cable:**
+
+| Property | Spec | Notes |
+|----------|------|-------|
+| Length   | **30 – 50 cm typical**, up to ~80 cm | I²C at default 100 kHz tolerates long runs; keep shorter if you can |
+| Conductors | 5 (VCC, GND, SDA, SCL, IRQ) | A 6-pin Dupont connector with one spare is convenient |
+| Type     | Twisted-pair preferred, shielded for runs > 50 cm | Shield to GND **at the control-box end only** |
+| Routing  | Away from the antenna, not over it | The ferrite loop's null axis is perpendicular to its plane — orient the cable along the null when possible |
+
+**Why both boxes plastic.** Metal sensor box would Faraday-cage the
+antenna and kill sensitivity completely. Metal control box would be
+fine for shielding the noisy bits, **but** it would also block WiFi
+unless you ran an external antenna for the ESP32 — usually not worth
+the complexity. Plastic for both is the simpler win.
+
+**Re-calibrate TUN_CAP after moving the AS3935 board** into its own
+box. The new mechanical environment has different parasitic
+capacitance and the LC tank's resonance shifts. One click in the
+dashboard (Tuning panel → Actions → Calibrate TUN_CAP) or
+`mosquitto_pub -h $H -t lightning/as3935/cmd -m '{"action":"calibrate_tun_cap"}'`.
+Documented as Step 1 of the field-deploy troubleshooting flow.
+
+**Symptom signature** if the sensor is still too close to digital
+circuitry after deploy:
+
+- False `event:"lightning"` events firing repeatedly in clear
+  weather
+- **Distance value of `1` (or `0` / "overhead")** on most or all
+  of them — chip is reading saturated front-end as "very close"
+- **Periodic cadence near 5 min**, matching the firmware's status
+  republish WiFi-TX cycle (give or take a few seconds)
+
+If you see that pattern after deployment, increase the inter-box
+cable length and / or relocate the sensor box further from any
+metal in the surrounding structure (gutters, wall flashing, the
+solar panel's frame). Tuning knobs (WDTH, min_num_lightning, AFE_GB)
+mask the symptom but don't fix the cause — the chip is still being
+deafened by local noise.
+
+---
+
 ## Where to mount
 
 - **In shade.** Direct Bengaluru sun → enclosure hits 60 – 70 °C →
@@ -251,6 +357,9 @@ Before you seal anything:
   Check with a phone WiFi-analyzer app held at the install
   location; if it's marginal there, the ESP32's internal antenna
   will be worse.
+- **Sensor box ≥ 10 cm from the control box**, per the two-box
+  topology above — and the cable run away from the antenna's
+  sensitive axis, not draped over it.
 
 ---
 

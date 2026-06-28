@@ -234,6 +234,7 @@ real interrupts.
 | 4.1 | Wait for a real `disturber` IRQ (very common with man-made noise). | Terminal A: `lightning/as3935  {"event":"disturber",...}` plus a retained `.../last_event` and an updated `.../hb` (counters.disturber++). Events panel: Last Event card amber. |
 | 4.2 | Watch `.../hb` ticks. | One every ~10 s; `counters.irq` strictly non-decreasing; uptime monotonic. Tuning panel counter strip updates. |
 | 4.3 | **Power-cycle the ESP32**. | Tuning panel LED → red, then back to green ~15 s after reboot. NVS-persisted tunables (NF, WDTH, AFE GB, etc.) survive the cycle. The retained `last_event` from before the reboot is still shown on the Events panel — that's the whole point of `r=true` on the bridge side. |
+| 4.4 | **Sensor-proximity sanity check** (commissioning a new deploy). After mounting, leave the bridge running for 15–30 min in clear weather, then look at the Events panel's rolling log. | All `lightning` events should be reasonable distances (5+ km is typical for real strikes; closer is rare). **If most events report `distance=1`** ("overhead") and arrive at a periodic cadence near 5 min, the AS3935 board is too close to the ESP32 — see [`HANDOVER.md § Known gotchas`](../HANDOVER.md#known-gotchas) and [`WIRING.md § Outdoor deployment`](../WIRING.md#outdoor-deployment--two-box-topology-required) for the two-box fix. Strictness knobs (WDTH ↑, min_num_lightning ↑) mask the symptom but don't address the cause. |
 
 ### Phase 5 — Regression smoke
 

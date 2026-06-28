@@ -123,6 +123,17 @@ Hardware: 100 kΩ + 100 kΩ + 100 nF divider on GPIO 34 — see
 Without the divider the firmware still boots and runs; it just
 reports ~0 V, which is the visual cue the mod hasn't been done.
 
+**Outdoor deployment: two-box topology required (2026-06-28).**
+Field-deploy debug surfaced that the AS3935's ferrite-loop antenna
+picks up the ESP32's own digital switching activity at < 10 cm —
+the chip can't tell a weak distant impulse from a strong nearby
+one, and reports both as `distance=1`. Fix is structural: AS3935
+module in its own plastic enclosure, ESP32 + TP4056 + battery in
+a separate plastic enclosure, 5-wire harness between. Documented
+with the diagnostic signature in
+[`WIRING.md § Outdoor deployment`](WIRING.md#outdoor-deployment--two-box-topology-required).
+24-hour stability validation in progress.
+
 **v0.2.0 live on the bench since 2026-05-12.** Firmware exposes the
 full AS3935 register surface over an MQTT command channel
 (`lightning/as3935/cmd` in, `lightning/as3935/cmd/ack` out), NVS-backed,

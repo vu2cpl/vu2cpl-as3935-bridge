@@ -139,6 +139,47 @@ automatically.
 
 ---
 
+**AS3935 antenna picks up the ESP32's own digital activity at
+< 10 cm — outdoor deploy requires a separate sensor box.**
+
+Discovered field-side on 2026-06-28 after moving the bridge from
+the bench rig (everything in one box) into a sealed outdoor
+enclosure. Symptom: false `event:"lightning"` events firing in
+clear weather, **distance value `1` or `0` on most of them**,
+periodic cadence near 5 min that correlated with the firmware's
+`STATUS_REPUBLISH_MS` WiFi-TX cycle.
+
+Root cause: the AS3935's ferrite-loop antenna is a high-Q
+resonator tuned to 500 kHz, designed to pick up the impulsive EM
+signature of a lightning strike from tens of km away. That same
+sensitivity makes it pick up centimetres-distance switching
+transients from a nearby ESP32 module just as readily — CPU
+activity at 240 MHz, WiFi TX bursts on every status republish,
+CP2102 USB-serial clock harmonics, AMS1117 regulator transients.
+The chip can't tell "weak impulse from far away" from "strong
+impulse from very close" — both saturate the front-end and read
+as `distance=1` (overhead).
+
+Diagnostic flow that nailed it (preserved here so future-Manoj /
+forks don't re-pay the time):
+
+| Test | Hypothesis | Result |
+|------|------------|--------|
+| Disconnect solar panel | Charging-current transients from TP4056 | Did **not** stop false events |
+| Disconnect battery + TP4056, run on 5 V USB | Wall-wart switching noise | Did **not** stop false events |
+| Move AS3935 PCB into a separate plastic box | Antenna proximity to ESP32 | **Stopped false events** ✓ |
+
+Fix is structural, not tuneable — **two-box topology** documented
+in [`WIRING.md § Outdoor deployment`](WIRING.md#outdoor-deployment--two-box-topology-required).
+Strictness knobs (WDTH, min_num_lightning, AFE_GB) only mask the
+symptom while the chip is still being deafened by local noise.
+
+Also remember to **re-run TUN_CAP calibration** after moving the
+sensor board into its new enclosure — parasitic capacitance
+shifted, LC tank is no longer at exactly 500 kHz.
+
+---
+
 ## Decisions taken
 
 | # | Decision | Reason |
@@ -681,6 +722,108 @@ its own ADC math.
   battery voltage beyond reporting it.
 - Deep-sleep battery accounting — separate concern, comes in with
   the EXT0-wake work (open question E above).
+
+---
+
+## 2026-06-28 — field-deploy debug: false-positive lightning at 1 km
+
+No firmware or hardware change. Pure operational lesson — captured
+because it cost a couple of hours of field testing and would have
+cost the same again for the next deploy without this entry.
+
+### Symptom
+
+After moving the bench-validated v0.3.0 bridge into a new outdoor
+plastic enclosure and re-flashing nothing, the dashboard started
+showing **false `event:"lightning"` events in clear weather**,
+nearly **all reporting `distance=1`** (chip's "overhead /
+saturated front-end" indicator), at a **periodic cadence near
+5 min**. Real weather: blue sky, no thunder anywhere within
+50 km. Battery voltage (`vbat_mv: 4256`, calibrated to 4200 with
+`vbat_offset_mv=-56` after DMM cross-check) and chip self-cal
+(`calib_trco: OK`, `calib_srco: OK`) both nominal.
+
+The 5-min cadence was the diagnostic gold — exactly matches the
+firmware's `STATUS_REPUBLISH_MS`, which means the WiFi-TX burst
+for each retained-status publish was coupling into something
+nearby.
+
+### Diagnostic flow
+
+Followed the troubleshooting tree I wrote into chat earlier this
+session (now also living in
+[`WIRING.md § Outdoor deployment`](WIRING.md#outdoor-deployment--two-box-topology-required)
+as the canonical reference):
+
+| Step | Test | Result |
+|------|------|--------|
+| 1 | Re-ran `calibrate_tun_cap` action | Improved but didn't eliminate |
+| 2 | Disconnected solar panel | No change |
+| 3 | Disconnected battery + TP4056 entirely, ran ESP32 on 5 V USB | No change |
+| 4 | Moved AS3935 PCB into a separate plastic box, ran a 5-wire harness back to the ESP32 | **False events stopped** ✓ |
+
+That isolated it to **antenna proximity to ESP32 digital activity**,
+not the power chain, not the wall-wart adapter, not the
+enclosure being metal (both are plastic). The full mechanism
++ canonical two-box topology is now in WIRING.md as a top-level
+deployment section, and a one-paragraph summary lives in the
+"Known gotchas" block earlier in this file.
+
+### State as of this entry
+
+- **Two-box deployment in place.** AS3935 module is in its own
+  plastic enclosure, ~10–15 cm cable run to the control box
+  (ESP32 + TP4056 + battery). No more false positives in the
+  hours since.
+- **Tunables reverted to recommended defaults.** WDTH = 2, NF = 4,
+  AFE_GB = outdoor, min_num_lightning = 1, mask_dist = false.
+  `srej` stays at 4 (the operator's permanent post-bench
+  tightening, applied long before this debug session). The
+  strictness knobs that were cranked during diagnosis have all
+  been clicked back down — they were masking symptoms while the
+  chip was still being deafened by local noise; not needed once
+  the real fix is in place.
+- **TUN_CAP re-calibrated** after the move into the sensor box.
+  Different parasitic capacitance in the new mechanical
+  environment shifts the LC tank's resonance off 500 kHz; the
+  on-device sweep finds the right cap step.
+- **Operator monitoring for another day** to confirm the fix
+  holds across a full day-night thermal cycle and a few
+  WiFi-reconnect events before declaring v0.3.0 field-stable.
+
+### Lessons codified into the docs this session
+
+1. **`WIRING.md`** — new top-level section "Outdoor deployment —
+   two-box topology (required)" with the schematic, what-goes-
+   where table, cable spec, and the diagnostic symptom signature
+   (false lightning at distance=1, periodic 5-min cadence) so a
+   future operator can identify this failure mode in minutes
+   instead of hours.
+2. **`HANDOVER.md § Known gotchas`** — short entry pointing at the
+   WIRING section, with the diagnostic flow that nailed it.
+3. **`HANDOVER.md`** — this dated entry, the long-form story.
+4. **`README.md § Status`** — outdoor deployment now explicitly
+   described as two-box, with a forward-pointer to WIRING.
+5. **`nodered/README.md § Comprehensive test plan`** — Phase 4
+   gains a note about checking event distance distribution as
+   the first sensor-proximity sanity check during field
+   commissioning.
+
+### Open / next steps
+
+- **Continue monitoring for ~24 h** to confirm.
+- If a single false `lightning` appears with distance > 5 km
+  during that window, that's likely a genuine distant strike
+  (or possibly a distant industrial transient — see if the
+  shack's Lightning Antenna Protector flow corroborates). Real
+  storms in Bengaluru in the pre-monsoon period are common.
+- If false positives re-appear at the original 5-min cadence,
+  next step is to lengthen the inter-box cable or relocate
+  the sensor box further from the control box (and any
+  surrounding metal — gutters, solar frame, wall flashing).
+- Once a clean 24 h passes, declare v0.3.0 field-stable and
+  remove "field validation pending" from the README Status
+  block.
 
 ---
 
