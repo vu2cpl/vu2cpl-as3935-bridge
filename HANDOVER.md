@@ -787,9 +787,10 @@ deployment section, and a one-paragraph summary lives in the
   Different parasitic capacitance in the new mechanical
   environment shifts the LC tank's resonance off 500 kHz; the
   on-device sweep finds the right cap step.
-- **Operator monitoring for another day** to confirm the fix
-  holds across a full day-night thermal cycle and a few
-  WiFi-reconnect events before declaring v0.3.0 field-stable.
+- **24 h watch complete — v0.3.0 declared field-stable
+  (2026-06-29).** No false positives during a full day-night
+  thermal cycle. Two-box topology is now the canonical outdoor
+  layout for this bridge.
 
 ### Lessons codified into the docs this session
 
@@ -809,21 +810,30 @@ deployment section, and a one-paragraph summary lives in the
    the first sensor-proximity sanity check during field
    commissioning.
 
-### Open / next steps
+### Outcome (2026-06-29)
 
-- **Continue monitoring for ~24 h** to confirm.
-- If a single false `lightning` appears with distance > 5 km
-  during that window, that's likely a genuine distant strike
-  (or possibly a distant industrial transient — see if the
-  shack's Lightning Antenna Protector flow corroborates). Real
-  storms in Bengaluru in the pre-monsoon period are common.
-- If false positives re-appear at the original 5-min cadence,
-  next step is to lengthen the inter-box cable or relocate
-  the sensor box further from the control box (and any
+- **24 h watch passed cleanly.** No false `lightning` events in
+  clear weather. `disturber` / `noise` counts nominal for the
+  outdoor environment. Battery voltage tracked as expected
+  through the solar day (`vbat_mv` peaking under sun, sagging
+  overnight, offset trim from `vbat_offset_mv=-56` held).
+- **v0.3.0 declared field-stable.** README Status block updated
+  in the same commit as this outcome note.
+- **Two-box topology is now the canonical outdoor layout** for
+  this bridge — WIRING.md's "Outdoor deployment" section is the
+  authoritative reference for anyone forking or replicating this.
+
+### Contingencies (if this reappears in future)
+
+- If false `lightning` events return at the original 5-min cadence,
+  next step is to lengthen the inter-box cable further or
+  relocate the sensor box further from the control box (and any
   surrounding metal — gutters, solar frame, wall flashing).
-- Once a clean 24 h passes, declare v0.3.0 field-stable and
-  remove "field validation pending" from the README Status
-  block.
+- If a single false `lightning` appears with distance > 5 km,
+  that's likely a genuine distant strike (or a distant industrial
+  transient — cross-check the shack's Lightning Antenna Protector
+  flow which corroborates against Open-Meteo CAPE). Real storms
+  in Bengaluru in the pre-monsoon period are common.
 
 ---
 
