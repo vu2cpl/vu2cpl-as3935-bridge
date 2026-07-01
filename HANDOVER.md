@@ -74,24 +74,11 @@ and disabled — the ESP32 is the sole publisher.
 broker, WiFi auto-rejoins via WiFiManager-saved creds. Retained status
 refreshes every 5 min.
 
-**Outstanding for v0.3.0+:**
-- **Solder the v0.3.0 battery divider, flash, bench-verify against
-  DMM, and set `vbat_offset_mv` if the delta is > 50 mV.** Hardware
-  per [`WIRING.md`](WIRING.md). Firmware already supports it as of
-  2026-05-17.
-- Shack-side Telegram alert when `vbat_mv` < 3400 (or operator-tunable
-  threshold) for two consecutive heartbeats — tracked in the
-  `vu2cpl-shack` repo, not here.
-- Verify modem-sleep current drop on the bench (expected ~30-50 mA avg
-  vs the 100-200 mA measured at v0.1.1).
-- Power chain (TP4056 + 18650 + solar), with **panel mounted in sun**
-  even if enclosure is in shade (long cable).
-- Enclosure seal, field install with in-situ TUN_CAP re-tune (now
-  reachable from the shack via `{"action":"calibrate_tun_cap"}` — no
-  enclosure-opening needed).
-- Eventual deep-sleep + EXT0 wake on AS3935 IRQ (~10 µA between events).
-- OTA updates (ArduinoOTA) so a sealed-box re-flash doesn't require
-  USB access.
+**Outstanding work:** see [`TODO.md`](TODO.md) — the durable
+scannable index. Near-term is the modem-sleep bench measurement,
+enclosure sealing, and the field-mount at target location; v0.3.1
+brings OTA; v0.4.0 is the deep-sleep milestone. Cross-repo item is
+the shack-side Telegram low-vbat alert (in `vu2cpl-shack`).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for the version-by-version log and
 2026-05-11/12 bring-up gotchas.

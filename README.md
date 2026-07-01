@@ -162,13 +162,11 @@ disconnect logic in [`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack)
 consumes this bridge's `lightning/as3935` event stream as its primary
 strike source.
 
-**Outstanding** (per [`HANDOVER.md`](HANDOVER.md) for full detail):
-solder the v0.3.0 battery divider + flash + verify on bench against
-a DMM, verify modem-sleep current drop, build the power chain
-(TP4056 + 18650 + solar), seal the enclosure and do the field install
-with in-situ TUN_CAP recalibration over MQTT, then eventually
-deep-sleep + EXT0 wake on the AS3935 IRQ. Shack-side Telegram alert
-on low `vbat_mv` is being tracked separately in
+**Open work** lives in [`TODO.md`](TODO.md) — near-term is the
+modem-sleep bench measurement + enclosure seal + final field
+mount; v0.3.1 brings OTA (ArduinoOTA); v0.4.0 is the deep-sleep
++ EXT0-wake milestone. Cross-repo: shack-side Telegram alert on
+low `vbat_mv` is tracked in
 [`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack).
 
 See [`CHANGELOG.md`](CHANGELOG.md) for version-by-version history.
