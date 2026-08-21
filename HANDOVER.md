@@ -12,10 +12,14 @@ broker is migrating off anonymous access to per-role ACL accounts and
 this bridge now logs in as the `iot` account. Username/password are
 entered in the WiFi captive portal (default user `iot`, password
 never compiled in) and persist in NVS. Empty username ⇒ anonymous
-(backward-compatible). Clean `pio run` (Flash 72.4%). **Not yet
-flashed** — needs a USB re-flash + one portal pass to set the `iot`
-password before the broker sets `allow_anonymous false`. See
-[`CHANGELOG.md`](CHANGELOG.md) v0.4.0 and the dated section below.
+(backward-compatible). Clean `pio run` (Flash 72.4%). **Flashed
+2026-08-21** to the board on `/dev/cu.usbserial-0001` (CP2102);
+booted v0.4.0, WiFi + MQTT reconnected, retained status shows
+`"fw":"v0.4.0"`. It currently logs in as `iot` with an **empty
+password** (accepted while the broker is still anonymous).
+**Remaining:** one BOOT-hold portal pass to set the `iot` password
+before the broker sets `allow_anonymous false`. See
+[`CHANGELOG.md`](CHANGELOG.md) v0.4.0.
 
 **v0.3.0 ready, 2026-05-17.** Battery voltage telemetry shipped:
 `vbat_mv` on `/hb` (every 30 s) and `/status` (on connect + every
