@@ -15,11 +15,19 @@ never compiled in) and persist in NVS. Empty username ⇒ anonymous
 (backward-compatible). Clean `pio run` (Flash 72.4%). **Flashed
 2026-08-21** to the board on `/dev/cu.usbserial-0001` (CP2102);
 booted v0.4.0, WiFi + MQTT reconnected, retained status shows
-`"fw":"v0.4.0"`. It currently logs in as `iot` with an **empty
-password** (accepted while the broker is still anonymous).
-**Remaining:** one BOOT-hold portal pass to set the `iot` password
-before the broker sets `allow_anonymous false`. See
-[`CHANGELOG.md`](CHANGELOG.md) v0.4.0.
+`"fw":"v0.4.0"`. **Provisioned 2026-08-21** — `iot` password entered via the portal
+(NVS `mqtt_pass` now set); serial confirms `[mqtt] connecting …
+as iot` → `[mqtt] connected`. Fully authenticating; ready for the
+broker to set `allow_anonymous false`. See [`CHANGELOG.md`](CHANGELOG.md)
+v0.4.0.
+
+**Known fragility (fix in v0.4.1):** the MQTT-cred save is gated on a
+successful WiFi connect (`commitMqttParamsIfChanged()` runs only after
+`autoConnect()` returns true), so a WiFi `AUTH_FAIL` during the portal
+silently discards the entered password — hit exactly this during
+provisioning (apnet auth is intermittently flaky for this ESP32). Move
+the save to a `setSaveParamsCallback` that fires on form-submit,
+independent of WiFi outcome. Tracked in TODO.
 
 **v0.3.0 ready, 2026-05-17.** Battery voltage telemetry shipped:
 `vbat_mv` on `/hb` (every 30 s) and `/status` (on connect + every

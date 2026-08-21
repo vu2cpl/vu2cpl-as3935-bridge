@@ -12,12 +12,17 @@ bottom (they're not just deleted so the work log stays intact).
 
 ## Near-term operational (bench + install)
 
-- [ ] **(v0.4.0) Flash MQTT-auth firmware + set the `iot` password.**
-  `./flash.sh`, hold BOOT, enter the `iot` password in the portal's
-  new MQTT password field. Must land before the shack broker
-  (`192.168.1.169`) sets `allow_anonymous false`, or this bridge drops
-  off MQTT. See CHANGELOG v0.4.0 + HANDOVER Next-steps item 0; broker
-  migration tracked in `vlan-setup/SECURITY-AUDIT.md`.
+- [x] **(v0.4.0) Flash MQTT-auth firmware + set the `iot` password.**
+  Done 2026-08-21 — flashed to the CP2102 board, `iot` password set
+  via portal, serial confirms `[mqtt] connected as iot`, NVS
+  `mqtt_pass` set. Ready for broker `allow_anonymous false`.
+- [ ] **(v0.4.1) Decouple MQTT-cred save from WiFi connect.** Current
+  code only persists the portal's MQTT username/password *after* a
+  successful `autoConnect()`; a WiFi `AUTH_FAIL` during the portal
+  (apnet is intermittently flaky for this ESP32) silently drops the
+  entered password. Fix: `wm.setSaveParamsCallback(...)` that writes
+  NVS on form-submit, independent of WiFi. Hit this during v0.4.0
+  provisioning — got through only because WiFi eventually connected.
 - [ ] **Modem-sleep current-draw bench measurement.** Expected
   ~30–50 mA average with `modem_sleep=max` vs ~100–200 mA
   measured at v0.1.1. Needs a bench DMM in series with VIN
