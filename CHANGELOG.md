@@ -6,6 +6,52 @@ the `fw` field of every `lightning/as3935/status` MQTT payload.
 
 ---
 
+## v0.4.0 — 2026-08-21
+
+MQTT authentication support. The shack broker (`192.168.1.169`) is
+being migrated off anonymous access to per-role accounts with ACLs;
+this bridge uses the ACL-restricted **`iot`** account. Until now the
+firmware connected anonymously (`mqtt.connect(CLIENT_ID, nullptr,
+nullptr, …)`) and would have been dropped the moment the broker set
+`allow_anonymous false`.
+
+### MQTT
+
+- `mqttConnect()` now passes a username/password to `mqtt.connect()`.
+  Empty username ⇒ anonymous connect (backward-compatible with a
+  broker that still allows anonymous), so a device flashed with
+  v0.4.0 but not yet provisioned keeps working until the broker flips.
+- The connect log line now shows the account:
+  `[mqtt] connecting to …:1883 as iot (attempt …)`.
+
+### Provisioning (`WiFiManager` portal)
+
+- Two new captive-portal fields — **MQTT username** and **MQTT
+  password** — shown alongside the WiFi fields in both portal paths
+  (`wifiSetup()` auto-portal and the BOOT-hold re-provision in
+  `checkBootButtonForReset()`).
+- Username field defaults to `iot`; the **password is entered in the
+  portal and never compiled into the firmware or committed to git**
+  (keeps the repo's no-secrets-in-source convention).
+- Values persist in NVS (namespace `as3935`, keys `mqtt_user` /
+  `mqtt_pass`) and reload on boot; only re-saved when the operator
+  actually changes a field.
+
+### Operational
+
+- **Requires a USB re-flash** (no OTA in this firmware): `./flash.sh`,
+  then hold BOOT to open the portal and enter the `iot` password.
+  Boot log prints `[nvs] mqtt_user=iot mqtt_pass=(set)` to confirm.
+
+### Firmware (`src/main.cpp`)
+
+- New NVS keys `NVS_K_MQTT_USER` / `NVS_K_MQTT_PASS`; `mqttUser[64]` /
+  `mqttPass[64]` buffers loaded in `loadTunables()`.
+- New `saveMqttCreds()`, `attachMqttParams()`,
+  `commitMqttParamsIfChanged()` helpers.
+
+---
+
 ## v0.3.0 — 2026-05-17
 
 Battery voltage telemetry over MQTT. Required for outdoor deploy —

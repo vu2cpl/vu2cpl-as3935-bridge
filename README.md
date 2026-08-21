@@ -19,9 +19,14 @@ VU2CPL · Manoj · Bengaluru · MK83TE · Licensed 1993
 
 This repo is **opinionated for VU2CPL's specific shack** — it hard-codes:
 
-- MQTT broker at `192.168.1.169:1883`, plain, no auth, LAN-only.
+- MQTT broker at `192.168.1.169:1883`, plain, LAN-only. As of
+  **v0.4.0** the broker authenticates: the bridge logs in with the
+  ACL-restricted **`iot`** account, entered in the captive portal
+  (see below) — not compiled in. Empty username falls back to an
+  anonymous connect.
 - Captive-portal AP `vu2cpl-as3935-setup` / `vu2cpl1234` for first
-  WiFi setup (5-min window after factory reset).
+  WiFi setup (5-min window after factory reset). The portal also
+  carries **MQTT username / password** fields (default user `iot`).
 - IST timezone for ISO timestamps (`configTzTime("IST-5:30", …)`).
 - The existing Node-RED broker config ID `f4785be9863eab08`
   from `vu2cpl-shack/flows.json`.
@@ -103,8 +108,13 @@ WiFi credentials are not baked into the firmware — on first boot
 the ESP32 raises a captive portal AP (`vu2cpl-as3935-setup` /
 `vu2cpl1234` by default; the installer lets you change these) so
 you can pick the shack AP and enter its password from your phone.
-Hold the BOOT button for 3 s at power-on to clear stored
-credentials.
+The same portal (v0.4.0+) also has **MQTT username / password**
+fields — default user `iot`, password blank — so the broker
+credential is entered here, never compiled in. Both persist in NVS.
+Hold the BOOT button for 3 s at power-on to clear stored WiFi
+credentials and re-open the portal (also the way to change the MQTT
+credential later). Confirm on the serial monitor: the boot log
+prints `[nvs] mqtt_user=iot mqtt_pass=(set)`.
 
 ## Wiring
 

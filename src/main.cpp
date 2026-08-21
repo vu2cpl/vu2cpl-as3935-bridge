@@ -116,10 +116,20 @@ constexpr const char* NVS_K_MASK    = "mask_dist";
 constexpr const char* NVS_K_INDOOR  = "indoor";
 constexpr const char* NVS_K_PS_MAX  = "ps_max";
 constexpr const char* NVS_K_VBAT_OFFSET = "vbat_off_mv";
+constexpr const char* NVS_K_MQTT_USER   = "mqtt_user";
+constexpr const char* NVS_K_MQTT_PASS   = "mqtt_pass";
 
 // ── Runtime state ────────────────────────────────────────────────────────
 WiFiClient   wifiClient;
 PubSubClient mqtt(wifiClient);
+
+// MQTT credentials — provisioned via the WiFi portal, persisted in NVS.
+// Empty username ⇒ anonymous connect (backward-compatible with a broker
+// that still allows anonymous). Username defaults to "iot", the shack
+// broker's ACL-restricted IoT account; the password is entered in the
+// captive portal and never compiled into the firmware / committed to git.
+char mqttUser[64] = "iot";
+char mqttPass[64] = "";
 
 // ADC calibration handle for the battery divider. Characterised once at
 // boot in vbatInit(). esp_adc_cal_characterize() reads eFuse Vref if
@@ -227,6 +237,13 @@ void loadTunables() {
     tun.indoor            = p.getBool (NVS_K_INDOOR,  tun.indoor);
     tun.modem_sleep_max   = p.getBool (NVS_K_PS_MAX,  tun.modem_sleep_max);
     tun.vbat_offset_mv    = p.getShort(NVS_K_VBAT_OFFSET, tun.vbat_offset_mv);
+
+    // MQTT credentials — String form keeps the compiled-in default
+    // (mqttUser="iot", mqttPass="") when the NVS key is absent.
+    String mu = p.getString(NVS_K_MQTT_USER, mqttUser);
+    String mp = p.getString(NVS_K_MQTT_PASS, mqttPass);
+    strncpy(mqttUser, mu.c_str(), sizeof(mqttUser) - 1); mqttUser[sizeof(mqttUser) - 1] = '\0';
+    strncpy(mqttPass, mp.c_str(), sizeof(mqttPass) - 1); mqttPass[sizeof(mqttPass) - 1] = '\0';
     p.end();
 }
 void saveTunables() {
@@ -320,6 +337,39 @@ uint32_t readVbat_mV() {
     return (uint32_t)mv;
 }
 
+// ── MQTT credential portal fields (persisted in NVS) ─────────────────────
+// Shown in the WiFiManager captive portal alongside the WiFi fields, so
+// the operator sets the broker username/password at provisioning time.
+WiFiManagerParameter g_mqttUserParam("mqttuser", "MQTT username", "", 63);
+WiFiManagerParameter g_mqttPassParam("mqttpass", "MQTT password", "", 63);
+
+void saveMqttCreds(const char* u, const char* pw) {
+    strncpy(mqttUser, u,  sizeof(mqttUser) - 1); mqttUser[sizeof(mqttUser) - 1] = '\0';
+    strncpy(mqttPass, pw, sizeof(mqttPass) - 1); mqttPass[sizeof(mqttPass) - 1] = '\0';
+    Preferences p;
+    p.begin(NVS_NAMESPACE, false);
+    p.putString(NVS_K_MQTT_USER, mqttUser);
+    p.putString(NVS_K_MQTT_PASS, mqttPass);
+    p.end();
+    Serial.printf("[mqtt] credentials saved to NVS (user=%s)\n", mqttUser);
+}
+// Pre-fill the portal fields with the current values, then register them.
+void attachMqttParams(WiFiManager& wm) {
+    g_mqttUserParam.setValue(mqttUser, sizeof(mqttUser) - 1);
+    g_mqttPassParam.setValue(mqttPass, sizeof(mqttPass) - 1);
+    wm.addParameter(&g_mqttUserParam);
+    wm.addParameter(&g_mqttPassParam);
+}
+// After the portal closes, persist only if the operator changed a field.
+// Version-robust: no dependency on setSaveParamsCallback.
+void commitMqttParamsIfChanged() {
+    const char* u  = g_mqttUserParam.getValue();
+    const char* pw = g_mqttPassParam.getValue();
+    if (strcmp(u, mqttUser) != 0 || strcmp(pw, mqttPass) != 0) {
+        saveMqttCreds(u, pw);
+    }
+}
+
 // ── WiFi / portal ────────────────────────────────────────────────────────
 void checkBootButtonForReset() {
     pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
@@ -334,7 +384,9 @@ void checkBootButtonForReset() {
             WiFiManager wm;
             wm.resetSettings();
             wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
+            attachMqttParams(wm);
             wm.startConfigPortal(WIFI_AP_SSID, WIFI_AP_PASS);
+            commitMqttParamsIfChanged();
             ESP.restart();
         }
         delay(50);
@@ -349,6 +401,7 @@ void wifiSetup() {
     WiFiManager wm;
     wm.setConfigPortalTimeout(WIFI_PORTAL_TIMEOUT_S);
     wm.setConnectTimeout(20);
+    attachMqttParams(wm);
     Serial.printf("[wifi] auto-connect; if no stored creds, AP=%s pass=%s\n",
                   WIFI_AP_SSID, WIFI_AP_PASS);
     if (!wm.autoConnect(WIFI_AP_SSID, WIFI_AP_PASS)) {
@@ -356,6 +409,7 @@ void wifiSetup() {
         delay(1000);
         ESP.restart();
     }
+    commitMqttParamsIfChanged();
     Serial.printf("[wifi] connected, RSSI %d dBm, IP %s\n",
                   WiFi.RSSI(), WiFi.localIP().toString().c_str());
 }
@@ -389,10 +443,13 @@ void mqttConnect() {
     mqtt.setServer(MQTT_HOST, MQTT_PORT);
     mqtt.setBufferSize(512);
     mqtt.setCallback(onMqttMessage);
+    const char* user = (mqttUser[0] != '\0') ? mqttUser : nullptr;
+    const char* pass = (mqttPass[0] != '\0') ? mqttPass : nullptr;
     while (!mqtt.connected()) {
-        Serial.printf("[mqtt] connecting to %s:%d (attempt %u/%u)\n",
-                      MQTT_HOST, MQTT_PORT, mqttFailCount + 1, MQTT_MAX_FAILS);
-        if (mqtt.connect(CLIENT_ID, nullptr, nullptr,
+        Serial.printf("[mqtt] connecting to %s:%d as %s (attempt %u/%u)\n",
+                      MQTT_HOST, MQTT_PORT, user ? user : "(anonymous)",
+                      mqttFailCount + 1, MQTT_MAX_FAILS);
+        if (mqtt.connect(CLIENT_ID, user, pass,
                          TOPIC_STATUS, 1, true, lwtPayload)) {
             Serial.println("[mqtt] connected, LWT armed");
             mqtt.subscribe(TOPIC_CMD);
@@ -756,6 +813,8 @@ void setup() {
                   tun.nf, tun.wdth, tun.srej, tun.tun_cap, tun.mask_dist,
                   tun.min_num_lightning, tun.indoor, tun.modem_sleep_max,
                   tun.vbat_offset_mv);
+    Serial.printf("[nvs] mqtt_user=%s mqtt_pass=%s\n",
+                  mqttUser, mqttPass[0] ? "(set)" : "(empty)");
 
     checkBootButtonForReset();
 

@@ -107,6 +107,13 @@ the `mosquitto_pub` recipe in the test plan below.
 > 192.168.1.169:1883) already present in `vu2cpl-shack/flows.json`.
 > If you import into a Node-RED that lacks that config, the MQTT
 > nodes will show as un-configured — re-point them at your broker.
+>
+> **Auth (2026-08 migration).** The shack broker is moving off
+> anonymous access to per-role accounts. This broker config node
+> must carry the **`nodered`** username/password once
+> `allow_anonymous false` is set on `192.168.1.169`; until then it
+> connects anonymously. (The bridge firmware itself uses the `iot`
+> account — see the top-level CHANGELOG v0.4.0.)
 
 ### Editing the panel
 

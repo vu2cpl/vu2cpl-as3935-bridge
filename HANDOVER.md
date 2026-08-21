@@ -7,6 +7,16 @@
 
 ## Status
 
+**v0.4.0 built, 2026-08-21.** MQTT authentication added — the shack
+broker is migrating off anonymous access to per-role ACL accounts and
+this bridge now logs in as the `iot` account. Username/password are
+entered in the WiFi captive portal (default user `iot`, password
+never compiled in) and persist in NVS. Empty username ⇒ anonymous
+(backward-compatible). Clean `pio run` (Flash 72.4%). **Not yet
+flashed** — needs a USB re-flash + one portal pass to set the `iot`
+password before the broker sets `allow_anonymous false`. See
+[`CHANGELOG.md`](CHANGELOG.md) v0.4.0 and the dated section below.
+
 **v0.3.0 ready, 2026-05-17.** Battery voltage telemetry shipped:
 `vbat_mv` on `/hb` (every 30 s) and `/status` (on connect + every
 5 min), new `cmd` action `query_vbat` for one-shot fresh reading,
@@ -197,6 +207,14 @@ shifted, LC tank is no longer at exactly 500 kHz.
 
 ## Next steps
 
+0. **(v0.4.0) Flash MQTT-auth firmware + set the `iot` password.**
+   `./flash.sh`, then hold BOOT to open the portal and enter the `iot`
+   account password (from the shack password manager) in the new MQTT
+   password field. Confirm on serial: `[nvs] mqtt_user=iot
+   mqtt_pass=(set)` and `[mqtt] connecting … as iot`. Must be done
+   before the broker `192.168.1.169` sets `allow_anonymous false`,
+   or this bridge drops off. Broker-side migration tracked in the
+   `vlan-setup` repo's SECURITY-AUDIT.md.
 1. **Wire it up on the bench first** — ESP32 + AS3935 on breadboard, USB power. Get the I²C link working before adding the battery/solar layer.
 2. **Get WiFi + MQTT connecting** — to `192.168.1.169:1883`. Verify `mosquitto_sub -t lightning/as3935 -v` on the Pi sees a heartbeat.
 3. **Match the MQTT contract** — first thing the flow will see when the new firmware comes up. Cross-check against
