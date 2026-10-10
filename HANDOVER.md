@@ -109,6 +109,23 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the version-by-version log and
 
 ## Known gotchas
 
+**Downstream-only MQTT loss after a Wi-Fi rejoin, hidden for weeks by disturber traffic (2026-10-10).**
+Symptom: the broker logs `as3935-bridge has exceeded timeout` every ~23 s
+(keepalive 15 s × 1.5) and the sensor reconnects at once. Heartbeats arrive
+minutes apart. The sensor does not answer ping, while other IoT-VLAN devices
+do. A tcpdump on the broker shows the sensor's packets arriving, but the
+broker's replies (PINGRESP, SUBACK) are never ACKed, except in the seconds
+right after a connect. Cause: a stale Wi-Fi association after a rejoin; the
+sensor rejoined Wi-Fi at 21:43 on 8 Oct and never recovered. Fix: the `reboot`
+cmd action. **Deliver commands right after a "ready" status** (a fresh
+connect), because downstream works only then, and confirm on `cmd/ack`.
+`modem_sleep=min` alone did NOT fix it. Why it surfaced only then: until
+8 Oct 21:43 the AS3935 reported about 6 disturbers/s (about 550k/day) around
+the clock. Each was an MQTT publish, so the radio never dozed and the link
+problem never showed. When that interference stopped, it did. The heartbeat
+health check kept passing intermittently, because the broker's
+connect/timeout churn is the real signal.
+
 **Dual CP2102 ports collide on the same `/dev/cu.usbserial-0001`.**
 This ESP32 board and the sibling [`esp8266-gps-ntp`](https://github.com/vu2cpl/esp8266-gps-ntp)
 NodeMCU both ship with Silicon Labs CP2102 USB-serial chips
@@ -855,3 +872,23 @@ deployment section, and a one-paragraph summary lives in the
 ---
 
 *73 de VU2CPL*
+
+## 2026-10-10 — keepalive flapping since 8 Oct 21:43: diagnosed, fixed by reboot; modem sleep → min
+
+- **Found by** the shack-health check's AS3935 heartbeat WARN (gaps of 5–11 min). The broker log
+  showed ~100–120 keepalive timeouts/hour, continuously, starting 2026-10-08 21:44:26. At 21:43:46
+  the sensor closed its own connection (a Wi-Fi rejoin). Its last disturber event was at 21:43:25.
+  Before that, ~550k disturbers/day since at least 2 Oct (HA history), then none at all.
+- **Evidence:** see Known gotchas. Upstream reaches the broker; downstream is dropped after the
+  first seconds of each connection. Ping to the sensor: 0/10, while other IoT devices answer 4/4 from
+  the same Pi.
+- **Actions (Manoj's go):** `{"set":"modem_sleep","value":"min"}` (ack OK, NVS). It is **not
+  battery powered** (Manoj, 2026-10-10), so less sleep is fine. Flapping continued. Then
+  `{"action":"reboot"}`: back in ~5 s with `modem_sleep: min`, heartbeats every 30 s again, ping
+  10/10, no broker timeouts since. Both commands went via Home Assistant's `mqtt.publish` (the
+  `ha` account), because the health-check account `svc` is read-only on `lightning/#`. Each was
+  timed to land just after a "ready" status.
+- **Open:** (1) If it recurs, check UniFi for which AP the sensor is on and for a stale/duplicate
+  client entry. (2) A firmware option for `WIFI_PS_NONE` (no sleep) could be added, since it's
+  mains powered. (3) The disturber flood that stopped at 21:43 on 8 Oct: worth correlating with the
+  shack's local-QRM hunt (ubersdr-box HANDOVER, "Local QRM investigation").

@@ -23,7 +23,7 @@ bottom (they're not just deleted so the work log stays intact).
   entered password. Fix: `wm.setSaveParamsCallback(...)` that writes
   NVS on form-submit, independent of WiFi. Hit this during v0.4.0
   provisioning — got through only because WiFi eventually connected.
-- [ ] **Modem-sleep current-draw bench measurement.** Expected
+- [ ] *(Low priority since 2026-10-10: the deployed unit is not battery powered and runs `modem_sleep=min`.)* **Modem-sleep current-draw bench measurement.** Expected
   ~30–50 mA average with `modem_sleep=max` vs ~100–200 mA
   measured at v0.1.1. Needs a bench DMM in series with VIN
   averaged over a few minutes. Validates the v0.3.0+ power
