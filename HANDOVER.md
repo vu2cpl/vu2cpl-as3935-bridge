@@ -998,3 +998,29 @@ the device still runs v0.4.0.** v0.4.0 has no OTA, so the first install is a USB
   so far no sign that per-event publishing was generating them. These readings were taken while the box
   was being handled, so the proper A/B (`evt_interval_s` 60 vs 0) still needs the box back in its
   installed position.
+
+### 2026-10-14 — disturber A/B/A test: publishing them doesn't cause them
+
+Installed position, wall power, `modem_sleep: none`, rates from the device's own `counters.disturber`
+(heartbeat deltas), not from what was published:
+
+| Phase | `evt_interval_s` | Minutes | Disturbers | Per min | hb-rate range |
+|---|---|---|---|---|---|
+| A (14:02–15:02) | 60 (throttled) | 59.5 | 23,637 | 397.3 | 372–422 |
+| B (15:02–16:02) | 0 (every event, ~13 publishes/s) | 59.5 | 23,643 | 397.4 | 370–436 |
+| A2 (16:02–16:32) | 60 | 29.5 | 11,869 | 402.3 | 384–430 |
+
+0 reconnects, 0 restarts, no lightning, noise counter unchanged (4). Setting restored to 60 (confirmed by
+status 16:02:34).
+
+- **Conclusion:** the per-event MQTT traffic is *not* what generates the disturbers. That part of the
+  hypothesis is ruled out. The rate is remarkably steady (~400/min, ±10%, day and night for days), which
+  looks like a continuous local source rather than weather.
+- **Still open:** what the source is, and why the count froze exactly when the WiFi link went stale on 8 Oct
+  and 14 Oct. The ESP32's WiFi radio in general (not the publishes) is still a candidate, and so is the
+  board as a whole. Next test, now cheap thanks to OTA: a firmware action that switches WiFi off for ~60 s,
+  counts disturbers, then reconnects and reports. If the count falls to ~0 with the radio off, the ESP32 is
+  the source and the fix is physical (distance, shielding, ferrites). If not, look at the shack's ambient
+  noise (ubersdr-box HANDOVER "Local QRM investigation").
+- The throttle stays at 60 regardless: the disturbers are harmless to detection, and v0.4.0's ~13 MQTT
+  publishes a second bought nothing.

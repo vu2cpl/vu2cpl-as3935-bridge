@@ -20,12 +20,12 @@ bottom (they're not just deleted so the work log stays intact).
   (`boot_cause: ota`). See HANDOVER.
 - [ ] **Watch for brownouts with `modem_sleep: none`.** The one at 13:57:26 on 2026-10-14 was the USB
   cable being pulled (confirmed). Another one on wall power ⇒ back to `min`.
-- [ ] **Find out whether the disturbers are self-generated.** After the
-  flash, note `rate_per_min.disturber` for an hour at `evt_interval_s`
-  60, then an hour at 0 (every event published, as in v0.4.0). A rate
-  that drops sharply with the throttle on means the ESP32's own WiFi
-  makes them; then try more distance between the boxes. See HANDOVER
-  2026-10-14.
+- [ ] **Find the disturber source (~400/min, steady).** 2026-10-14 A/B/A
+  test: identical rate with the throttle on (397.3/min) and off (397.4),
+  so the MQTT publishing isn't causing them. Next: a firmware action that
+  turns WiFi off for ~60 s and counts disturbers (OTA makes this cheap).
+  ~0 with the radio off ⇒ the ESP32 is the source (fix: distance /
+  shielding / ferrites). See HANDOVER 2026-10-14.
 - [ ] **(next firmware) Decouple MQTT-cred save from WiFi connect.**
   *(Was tagged v0.4.1; left out of the 2026-10-14 v0.4.1, which was scoped
   to the self-heal / throttle / OTA / modem-sleep work.)* Current
