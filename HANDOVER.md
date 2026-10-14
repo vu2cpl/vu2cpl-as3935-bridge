@@ -1025,6 +1025,8 @@ Installed position, wall power, `modem_sleep: none`, rates from the device's own
 
 0 reconnects, 0 restarts, no lightning, noise counter unchanged (4). Setting restored to 60 (confirmed by
 status 16:02:34).
+Script: `test/field/disturber_ab.py <out.csv>` (runs on the Pi; commands go through HA `mqtt.publish`,
+since `svc` is read-only on `lightning/#`).
 
 - **Conclusion:** the per-event MQTT traffic is *not* what generates the disturbers. That part of the
   hypothesis is ruled out. The rate is remarkably steady (~400/min, ±10%, day and night for days), which
@@ -1061,6 +1063,8 @@ the board: the radio-off / rejoin cycle itself; the result format was checked on
 | on_after | 403 | 403.0 |
 
 Rejoin 2.2 s; no LWT/offline seen; noise 0, lightning 0. The test machinery works first time on hardware.
+Script: `test/field/wifi_off_run.py [secs]` (Mac; reads `~/.config/vu2cpl-shack.env`, prints the ack,
+status changes and the retained result).
 
 - **Ruled out now:** the per-event MQTT traffic (A/B/A, earlier) and the ESP32's WiFi radio altogether.
 - **Left:** the rest of the board (CPU / clocks / its supply), the wall adapter that powers the unit since
