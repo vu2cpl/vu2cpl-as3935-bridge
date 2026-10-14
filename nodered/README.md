@@ -265,9 +265,9 @@ After any panel edit + `python3 nodered/build-flow.py` + re-import:
 |-------|-----------|---------|
 | `lightning/as3935/cmd` | publish → ESP32 | Send a tuning command |
 | `lightning/as3935/cmd/ack` | ESP32 → subscribe | One-line ack/error |
-| `lightning/as3935/status` | ESP32 → subscribe (retained) | Full state — incl. `vbat_mv` + `vbat_offset_mv` (v0.3.0) |
-| `lightning/as3935/hb` | ESP32 → subscribe (retained) | uptime + counters + `vbat_mv` (v0.3.0) |
-| `lightning/as3935` | ESP32 → subscribe | lightning/disturber/noise events |
+| `lightning/as3935/status` | ESP32 → subscribe (retained) | Full state — incl. `vbat_mv` + `vbat_offset_mv` (v0.3.0), `evt_interval_s` + `boot_cause` (v0.4.1) |
+| `lightning/as3935/hb` | ESP32 → subscribe (retained) | uptime + counters + `vbat_mv` (v0.3.0), `rate_per_min` + `mqtt_reconnects` (v0.4.1) |
+| `lightning/as3935` | ESP32 → subscribe | lightning/disturber/noise events. Since v0.4.1 disturber/noise are throttled to one per `evt_interval_s` with a `count` field, so the event log shows one row a minute, not ~6 a second |
 | `lightning/as3935/last_event` | ESP32 → subscribe (retained) | Latest event with `ts_epoch_ms` — backs the Events panel's Last Event card across restart |
 
 ---
@@ -290,7 +290,8 @@ After any panel edit + `python3 nodered/build-flow.py` + re-import:
 | `mask_dist` | true/false | Suppress disturber events |
 | `min_num_lightning` | 1 / 5 / 9 / 16 | Strikes before IRQ asserts |
 | `afe_gb` | `"indoor"` / `"outdoor"` | Analog front-end gain |
-| `modem_sleep` | `"max"` / `"min"` | WiFi modem sleep aggressiveness |
+| `modem_sleep` | `"max"` / `"min"` / `"none"` | WiFi modem sleep aggressiveness. `none` (v0.4.1) keeps the radio always on, for a mains-powered unit. The dashboard's dropdown only offers max/min; send `none` with `mosquitto_pub` |
+| `evt_interval_s` | 0–3600 | (v0.4.1) Publish at most one disturber and one noise event per this many seconds; default 60. `0` = every event (v0.4.0 behaviour). Lightning is never throttled |
 | `vbat_offset_mv` | −500 .. +500 | Per-chip Vref trim for the battery ADC. Add this many millivolts to every `vbat_mv` reading. Most ESP32s need 0 or close to it. |
 
 ### Actions
@@ -300,7 +301,8 @@ After any panel edit + `python3 nodered/build-flow.py` + re-import:
 | `republish_status` | Re-publish retained status |
 | `calibrate_tun_cap` | ~35 s LCO sweep, picks best cap, persists |
 | `query_vbat` | One-shot fresh battery reading; acks `action:query_vbat vbat_mv=NNNN` and republishes status so the dashboard updates atomically |
-| `reboot` | `ESP.restart()` |
+| `reboot` | Restart (`boot_cause` reads `cmd_reboot` afterwards) |
+| `ota_open` | (v0.4.1) Start the HTTP update server for 10 min; the ack carries the URL. Upload with `../ota.sh` from the repo root. Refused if no MQTT password is stored, since that is the upload password |
 | `factory_reset_wifi` | Erase WiFi creds, restart into captive portal |
 
 All `set` commands persist to NVS automatically — values survive

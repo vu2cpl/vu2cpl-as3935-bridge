@@ -6,6 +6,78 @@ the `fw` field of every `lightning/as3935/status` MQTT payload.
 
 ---
 
+## v0.4.1 — 2026-10-14
+
+Self-healing and a much quieter event stream, after two outages
+(2026-10-08→10, 2026-10-14) where the MQTT link flapped every ~23 s for
+hours and only a manual `reboot` command fixed it. Plus OTA, so later
+fixes don't need a ladder. **Built and host-tested, not yet on the
+device**: the first install is a USB flash, because v0.4.0 has no OTA.
+
+### Self-heal
+
+- **5 MQTT reconnects inside 10 min ⇒ restart** (`boot_cause:
+  mqtt_churn`). The existing watchdog only fires after 10 min with no
+  *successful* publish, and while the link flaps, upstream publishes
+  keep succeeding, so it never fired. At the flapping cadence the new
+  check restarts after ~90 s instead of waiting for a human.
+- **`boot_cause` in status**: why the last restart happened. Hardware
+  reasons (`power_on`, `brownout`, `panic`, `task_wdt`, …) come from
+  `esp_reset_reason()`; the firmware's own restarts (`mqtt_churn`,
+  `publish_wdt`, `mqtt_fail`, `wifi_timeout`, `cmd_reboot`,
+  `cmd_wifi_reset`, `portal`, `portal_timeout`, `ota`) leave their
+  reason in RTC memory via the new `restartWith()`.
+- Heartbeat gains `mqtt_reconnects` (since boot).
+
+### Events
+
+- **Disturber and noise events are throttled**: one publish per
+  `evt_interval_s` (new NVS tunable, default 60, range 0–3600; `0` =
+  every event, the v0.4.0 behaviour). The publish carries `count`, the
+  number of events it stands for. Lightning is never throttled.
+  Disturbers had been running at ~6/s, i.e. ~12 MQTT publishes a second
+  with `last_event`, keeping the radio transmitting almost nonstop.
+- Heartbeat gains `rate_per_min:{disturber, noise}` (since the previous
+  heartbeat), so the true rate stays visible with the throttle on.
+- `last_event` follows the throttle (at most one disturber/noise update
+  per interval).
+
+### OTA
+
+- `{"action":"ota_open"}` starts an HTTP update server on port 80 for
+  10 min (re-sending extends it). Upload with basic auth, user `ota`,
+  password = the MQTT password in NVS. Refused if no MQTT password is
+  set. New `ota.sh` does the whole round trip.
+- HTTP push rather than ArduinoOTA, because the IoT VLAN can't open
+  connections back to the uploader.
+- **Rollback:** `verifyRollbackLater()` keeps a new image on probation
+  until it has connected to MQTT and published its status; a restart
+  before that makes the bootloader return to the previous image. The
+  hook needs `extern "C"` to replace the core's weak C default (checked
+  with `nm`: without it the core's version was linked and rollback would
+  silently have done nothing).
+
+### WiFi
+
+- `modem_sleep` accepts `none` (`WIFI_PS_NONE`) besides `max` / `min`.
+  New NVS key `ps_mode`; a unit upgraded from v0.4.0 keeps its `ps_max`
+  setting, and `ps_max` is still written so a downgrade reads back
+  something sensible.
+
+### Build / test
+
+- Built with the pioarduino platform 55.03.311 (Arduino core 3.3.11):
+  Flash 89.0% (1,166,597 of 1,310,720 bytes), RAM 16.1%. The partition
+  table already has two 1.25 MB app slots, so OTA needs no repartition.
+- `src/bridge_util.h` holds the churn and throttle logic with no Arduino
+  dependencies; `test/host/test_bridge_util.cpp` checks it on the host
+  (14 checks: the 23 s flapping cadence, rare reconnects, the window
+  edge, the millis() wrap, throttle counts).
+- `ota.sh` tested against a mock HTTP server: basic auth from stdin with
+  a password containing a space, `"` and `\`, multipart field `firmware`.
+
+---
+
 ## v0.4.0 — 2026-08-21
 
 MQTT authentication support. The shack broker (`192.168.1.169`) is

@@ -226,6 +226,54 @@ captive portal on first boot (Stage 3a). The MQTT broker host is
 hardcoded to `192.168.1.169:1883` in `src/main.cpp` — change there
 or rerun `install.py` if you have a different LAN broker.
 
+### Over-the-air updates (v0.4.1+)
+
+Once a unit runs v0.4.1, re-flash it over WiFi from the repo root:
+
+```sh
+./ota.sh              # build, then push
+./ota.sh --no-build   # push the existing .pio/build/esp32dev/firmware.bin
+```
+
+It asks once for the `iot` MQTT password (never echoed), then:
+
+1. publishes `{"action":"ota_open"}` to `lightning/as3935/cmd`. The device
+   starts an HTTP update server on port 80 for 10 min and acks with
+   `action:ota_open url=http://<ip>/update for 600s`;
+2. uploads the image: `curl -u ota:<mqtt password> -F firmware=@firmware.bin <url>`
+   (the script feeds the password to curl on stdin, not argv);
+3. waits up to 3 min for `lightning/as3935/status` to report the new `fw`
+   and prints its `boot_cause` (`ota`).
+
+Design notes:
+
+- **Why an HTTP push, not ArduinoOTA:** the sensor is on the IoT VLAN.
+  The Mac (Trusted) may open connections into it, but the IoT VLAN can't
+  call back out, and ArduinoOTA's device side connects back to the
+  uploader. A push only needs the inbound path.
+- **Password:** the upload password is the MQTT password stored in NVS,
+  so nothing secret is in this public repo. With no MQTT password set,
+  `ota_open` is refused. Anyone holding the `iot` credential could already
+  publish fake lightning events or reboot the sensor; OTA adds nothing
+  they couldn't do.
+- **Rollback:** a new image boots on probation. If it restarts for any
+  reason before it has connected to MQTT and published its status, the
+  bootloader goes back to the previous image. ota.sh then reports that
+  the old version came back. This needs the bootloader from a v0.4.1 USB
+  flash (the Arduino core 3.x one has `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`).
+- **Toolchain:** v0.4.1 was built and checked with the pioarduino platform
+  55.03.311 (Arduino core 3.3.11). `platformio.ini` doesn't pin a platform.
+  If `pio` on your PATH is an old Homebrew build (it fails with
+  "Python version must be 3.10…"), use `~/.platformio/penv/bin/pio`.
+  `ota.sh` prefers that one automatically.
+
+The two small pieces of logic that decide restarts and event throttling
+live in `src/bridge_util.h` and have a host test (no ESP32 needed):
+
+```sh
+c++ -std=c++17 -Wall -Wextra -I src -o /tmp/tbu test/host/test_bridge_util.cpp && /tmp/tbu
+```
+
 ### Stage 3a — First-boot WiFi setup (captive portal)
 
 On first power-on the ESP32 raises its own WiFi AP because it has no
@@ -426,6 +474,8 @@ schema, and editing instructions (HTML/CSS/JS source is in
 | `i2cWriteReadNonStop returned Error -1` on every read; `CFG0=0xFF` | AS3935 not responding on I²C | Swap SDA/SCL (silkscreen `D`/`C`, not `SDA`/`SCL`); verify SI is tied to VCC; verify VCC has 3.3 V vs GND with a meter |
 | Constant noise events (`noise` counter climbing fast) | NF too low for environment | From shack: `mosquitto_pub -t lightning/as3935/cmd -m '{"set":"nf","value":5}'` (or higher up to 7) |
 | Constant disturber events | Local RF (ham gear nearby, motor brushes, switching PSU) | Mask them: `{"set":"mask_dist","value":true}`. Or raise `wdth` / `srej`. |
+| Disturbers at a steady ~6/s day and night, and they **stop dead whenever the WiFi link goes bad** (2026-10-08, 2026-10-14) | Suspected: the ESP32's own WiFi transmissions reaching the AS3935 antenna (each disturber used to cost 2 MQTT publishes) | v0.4.1 throttles them to 1/min. Compare `rate_per_min.disturber` in the hb with `evt_interval_s` 60 vs 0: if the rate drops with the throttle on, they are self-generated; move the sensor box further from the control box. See HANDOVER 2026-10-14 |
+| Broker log `as3935-bridge has exceeded timeout` every ~23 s; heartbeats minutes apart; sensor doesn't answer ping | Stale WiFi association: upstream works, downstream (PINGRESP, commands) is lost | v0.4.1+ restarts itself after 5 reconnects in 10 min (`boot_cause: mqtt_churn`). On v0.4.0: send `{"action":"reboot"}` right after a fresh `ready` status, the only moment commands get through |
 | `distance=63` reported continuously | "Out of range" code — storm overhead OR LC tank far off frequency | Wait for clear weather, then re-run `calibrate_tun_cap` |
 | Battery drains overnight | Solar undersized / panel in shade / cell ageing | Measure mid-day TP4056 IN voltage; cell should sit ≥ 4.0 V after a sunny day. Verify panel itself is in direct sun, not just the enclosure |
 | WiFi reconnects flapping | Marginal RSSI (-70 dBm or worse), or AP DHCP lease churn | Bump enclosure higher; static-lease the ESP32 in your router |

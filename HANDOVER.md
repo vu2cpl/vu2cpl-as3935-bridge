@@ -7,6 +7,16 @@
 
 ## Status
 
+**v0.4.1 written, 2026-10-14 — built and host-tested, NOT yet flashed.**
+Self-heal on MQTT churn (5 reconnects in 10 min ⇒ restart), `boot_cause`
+in status, disturber/noise publishes throttled to one a minute
+(`evt_interval_s`) with real rates in the heartbeat, OTA over HTTP opened
+by `{"action":"ota_open"}` with bootloader rollback, `modem_sleep` gains
+`none`. The deployed unit still runs v0.4.0; the first v0.4.1 install is a
+USB flash (`./flash.sh`); after that `./ota.sh`. See
+[`CHANGELOG.md`](CHANGELOG.md) v0.4.1 and the 2026-10-14 v0.4.1 entry at
+the end of this file.
+
 **v0.4.0 built, 2026-08-21.** MQTT authentication added — the shack
 broker is migrating off anonymous access to per-role ACL accounts and
 this bridge now logs in as the `iot` account. Username/password are
@@ -21,7 +31,7 @@ as iot` → `[mqtt] connected`. Fully authenticating; ready for the
 broker to set `allow_anonymous false`. See [`CHANGELOG.md`](CHANGELOG.md)
 v0.4.0.
 
-**Known fragility (fix in v0.4.1):** the MQTT-cred save is gated on a
+**Known fragility (still open, next firmware):** the MQTT-cred save is gated on a
 successful WiFi connect (`commitMqttParamsIfChanged()` runs only after
 `autoConnect()` returns true), so a WiFi `AUTH_FAIL` during the portal
 silently discards the entered password — hit exactly this during
@@ -914,3 +924,48 @@ deployment section, and a one-paragraph summary lives in the
 - **Also seen the same morning (probably unrelated):** the OpenWebRX RSP2 fell off USB on the ubersdr box
   at 04:18, 13 min earlier. Different host and different network. If the flapping recurs, still check
   UniFi for a Wi-Fi event or AP change around its start time (open item 1 below).
+
+## 2026-10-14 — v0.4.1 written: self-heal, event throttle, OTA, modem_sleep none
+
+Manoj asked for a firmware fix after the second flapping outage (entry above). **Built and host-tested;
+the device still runs v0.4.0.** v0.4.0 has no OTA, so the first install is a USB flash.
+
+- **Self-heal.** The only watchdog restarted after 10 min with no *successful* publish. While the link
+  flaps, publishes still go out every ~23 s on each fresh connection, so it never fired. v0.4.1 counts MQTT
+  reconnects in a ring (`ChurnTracker<5>` in `src/bridge_util.h`): 5 within 10 min ⇒ `restartWith("mqtt_churn")`,
+  about 90 s into a flap. A broker restart costs one reconnect, so it doesn't trip it. Side effect worth
+  knowing: two units with the same client id would kick each other, and both would now restart every ~2 min
+  rather than just flap.
+- **`boot_cause`.** Every deliberate restart goes through `restartWith(cause)`, which leaves the cause in
+  `RTC_NOINIT_ATTR` memory (survives a software reset, not power loss); hardware reasons come from
+  `esp_reset_reason()`. After the flash, a `mqtt_churn` proves the self-heal fired; `brownout` would point at
+  the supply.
+- **Throttle.** `EventThrottle` publishes the first disturber/noise event and then at most one per
+  `evt_interval_s` (default 60), with `count`. Node-RED's dashboard counters already come from the heartbeat,
+  and the event log just gets one row a minute instead of ~6 a second. Checked in vu2cpl-shack's flows:
+  `Parse AS3935` ignores extra keys; `LAST SEEN` reads `last_event.ts_epoch_ms`, which is now at most a minute
+  old while disturbers flow (and honestly old if they stop).
+- **Disturber-source test this enables.** With the throttle on, the radio no longer transmits per
+  disturber. If `rate_per_min.disturber` falls sharply at `evt_interval_s` 60 compared with 0, the ESP32's
+  WiFi is generating them, which fits README's two-box finding (false events when the AS3935 sits near the
+  ESP32).
+- **OTA.** `ota_open` → WebServer on :80 for 10 min, `POST /update` multipart field `firmware`, basic auth
+  `ota` + the NVS MQTT password, checked on the first upload chunk so a bad password never touches flash.
+  Checked from the Mac before writing it: `nc` to 192.168.30.215:80 gets "Connection refused", so Trusted →
+  IoT TCP is allowed (ArduinoOTA would need IoT → Mac, which the VLAN rules block). Rollback:
+  `extern "C" bool verifyRollbackLater() { return true; }` keeps a new image pending until
+  `markAppValidIfPending()` runs after the first successful status publish. **The `extern "C"` matters:**
+  the first build used a C++ definition, `nm` showed the core's weak `W verifyRollbackLater` still linked,
+  and rollback would silently have done nothing. Now `T verifyRollbackLater`.
+- **`modem_sleep: none`.** NVS `ps_mode` (0 none / 1 min / 2 max); falls back to the old `ps_max` bool when
+  absent (the deployed unit's `min` survives the upgrade), and still writes `ps_max` for downgrades.
+- **Tests.** `test/host/test_bridge_util.cpp`: 14 checks, all pass. `ota.sh` against a mock server: auth via
+  stdin (password with space, `"`, `\`), multipart field, URL/version parsing. Not testable without the
+  board: the WebServer upload path, the rollback itself, `boot_cause` across a real restart. Those are the
+  post-flash checks in TODO.
+- **Toolchain gotcha on the Mac mini:** `pio` on PATH is Homebrew's 6.1.19 on Python 3.9 and refuses to
+  build; `~/.platformio/penv/bin/pio` (Python 3.13) works. The installed `espressif32` platform is the
+  pioarduino fork 55.03.311 (Arduino core 3.3.11). `platformio.ini` doesn't pin it, so another machine may
+  build with a different core. Build the USB flash on this Mac, or check the core version first.
+- **Not in this release:** the MQTT-cred save gating fix that was earmarked "v0.4.1" (TODO, now "next
+  firmware"), and a `none` option in the dashboards' Modem sleep dropdown (vu2cpl-shack flow change).

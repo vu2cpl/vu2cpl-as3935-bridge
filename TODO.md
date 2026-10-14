@@ -16,7 +16,23 @@ bottom (they're not just deleted so the work log stays intact).
   Done 2026-08-21 — flashed to the CP2102 board, `iot` password set
   via portal, serial confirms `[mqtt] connected as iot`, NVS
   `mqtt_pass` set. Ready for broker `allow_anonymous false`.
-- [ ] **(v0.4.1) Decouple MQTT-cred save from WiFi connect.** Current
+- [ ] **USB-flash v0.4.1 to the deployed unit, then verify.** v0.4.0
+  has no OTA, so this one needs the cable. Afterwards check status shows
+  `"fw":"v0.4.1"`, `boot_cause`, `evt_interval_s: 60`, and that the hb
+  carries `rate_per_min` and `mqtt_reconnects`. Then try `./ota.sh` once
+  (re-pushing the same image is fine) to prove the OTA path end to end.
+- [ ] **Find out whether the disturbers are self-generated.** After the
+  flash, note `rate_per_min.disturber` for an hour at `evt_interval_s`
+  60, then an hour at 0 (every event published, as in v0.4.0). A rate
+  that drops sharply with the throttle on means the ESP32's own WiFi
+  makes them; then try more distance between the boxes. See HANDOVER
+  2026-10-14.
+- [ ] **Dashboard: offer `none` in the Modem sleep dropdown** (vu2cpl-shack
+  Master Dashboard `a35ms`, and `nodered/build-flow.py` here). Until then
+  `none` is set with `mosquitto_pub`; the dropdown just shows blank.
+- [ ] **(next firmware) Decouple MQTT-cred save from WiFi connect.**
+  *(Was tagged v0.4.1; left out of the 2026-10-14 v0.4.1, which was scoped
+  to the self-heal / throttle / OTA / modem-sleep work.)* Current
   code only persists the portal's MQTT username/password *after* a
   successful `autoConnect()`; a WiFi `AUTH_FAIL` during the portal
   (apnet is intermittently flaky for this ESP32) silently drops the
@@ -49,17 +65,7 @@ bottom (they're not just deleted so the work log stays intact).
   when `vbat_mv < 500` (visual cue that the divider isn't
   wired, not a real low-battery event).
 
-## v0.3.1 firmware (small)
-
-- [ ] **OTA updates (ArduinoOTA).** Highest-value firmware
-  addition post-field-mount. Climbing to the sealed enclosure
-  to USB-flash is the failure mode this eliminates. ArduinoOTA
-  on the existing WiFi connection is the simplest path — no
-  changes to the MQTT surface, just a background task that
-  listens for OTA pushes. Open Q C (v0.1.0) / Open Q F (v0.2.0)
-  in HANDOVER.
-
-## v0.4.0 firmware (deep-sleep milestone)
+## Deep-sleep milestone (unscheduled; was "v0.4.0" before v0.4.0 became MQTT auth)
 
 - [ ] **Deep-sleep + EXT0 wake on AS3935 IRQ.** Power budget
   changes from ~150 mA average to ~5 mA — the difference between
@@ -95,6 +101,12 @@ bottom (they're not just deleted so the work log stays intact).
 Newest first. Kept short so the file stays a work log, not a
 graveyard.
 
+- [x] **v0.4.1 written: self-heal on MQTT churn, `boot_cause`, disturber/
+  noise throttle, OTA with rollback, `modem_sleep` none** — 2026-10-14 ·
+  built + host-tested; not yet flashed (see the top of this list). OTA
+  became an HTTP push opened by `ota_open`, not ArduinoOTA, because the
+  IoT VLAN can't connect back to the uploader. Closes the old "OTA
+  updates (ArduinoOTA)" item (Open Q C / F).
 - [x] **v0.3.0 field-stable** — 2026-06-29 · 24 h two-box outdoor
   watch passed clean. README + HANDOVER updated in commit
   [`be38db7`](https://github.com/vu2cpl/vu2cpl-as3935-bridge/commit/be38db7).

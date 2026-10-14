@@ -11,6 +11,16 @@
 //   - battery voltage telemetry on GPIO 34 (ADC1_CH6) via 1:2 divider,
 //     published as vbat_mv on status + hb, queryable via cmd action,
 //     per-chip Vref delta correctable via vbat_offset_mv NVS tunable
+// v0.4.1 adds (after the 2026-10-10 / 10-14 keepalive-flapping outages):
+//   - self-heal: 5 MQTT reconnects inside 10 min ⇒ restart (the publish
+//     watchdog can't see that churn — upstream publishes keep succeeding)
+//   - boot_cause in status (why the last restart happened)
+//   - disturber/noise events throttled to one per evt_interval_s (default
+//     60 s, count of coalesced events in the payload); per-minute rates and
+//     the reconnect count ride the heartbeat
+//   - OTA over HTTP, opened for 10 min by the ota_open cmd action; app
+//     rollback if a new image doesn't reach MQTT before its first reboot
+//   - modem_sleep "none" (WIFI_PS_NONE) as a third option
 //
 // Any divergence from the Python daemon's status/hb shape breaks the
 // Node-RED Lightning Antenna Protector flow — extend, don't rename.
@@ -22,9 +32,15 @@
 #include <PubSubClient.h>
 #include <Preferences.h>
 #include <ArduinoJson.h>
+#include <WebServer.h>
+#include <Update.h>
 #include <esp_log.h>
 #include <esp_adc_cal.h>
+#include <esp_attr.h>
+#include <esp_system.h>
+#include <esp_ota_ops.h>
 #include <time.h>
+#include "bridge_util.h"
 
 // ── Broker / portal ──────────────────────────────────────────────────────
 constexpr const char* MQTT_HOST = "192.168.1.169";
@@ -66,6 +82,16 @@ constexpr uint32_t STATUS_REPUBLISH_MS = 5  * 60 * 1000;
 constexpr uint32_t NTP_WAIT_MS         = 10 * 1000;
 constexpr uint8_t  MQTT_MAX_FAILS      = 60;             // × 5 s = 5 min before restart
 constexpr uint32_t PUBLISH_WDT_MS      = 10 * 60 * 1000; // no successful publish ⇒ restart
+constexpr uint8_t  CHURN_MAX_RECONNECTS = 5;               // this many MQTT reconnects …
+constexpr uint32_t CHURN_WINDOW_MS      = 10 * 60 * 1000;  // … inside this window ⇒ restart
+
+// ── OTA (HTTP upload, opened on demand by the ota_open cmd action) ───────
+// Basic auth: user "ota", password = the MQTT password in NVS, so no secret is
+// compiled in (the repo is public). An `iot` credential holder can already
+// spoof lightning events and reboot the sensor; OTA adds nothing it can't do.
+constexpr uint16_t    OTA_PORT      = 80;
+constexpr uint32_t    OTA_WINDOW_MS = 10 * 60 * 1000;
+constexpr const char* OTA_USER      = "ota";
 
 // ── AS3935 ──────────────────────────────────────────────────────────────
 constexpr uint8_t AS3935_I2C_ADDR  = 0x03;
@@ -92,6 +118,12 @@ constexpr uint8_t AFE_GB_OUTDOOR = 0x0E;
 constexpr uint8_t AFE_GB_INDOOR  = 0x12;
 
 // ── Tunables (defaults; overridden from NVS at boot) ─────────────────────
+// WiFi power-save modes, in NVS order (ps_mode key).
+constexpr uint8_t PS_NONE = 0;   // WIFI_PS_NONE — radio always on (mains-powered units)
+constexpr uint8_t PS_MIN  = 1;   // WIFI_PS_MIN_MODEM
+constexpr uint8_t PS_MAX  = 2;   // WIFI_PS_MAX_MODEM
+const char* psName(uint8_t m) { return m == PS_NONE ? "none" : m == PS_MIN ? "min" : "max"; }
+
 struct Tunables {
     uint8_t nf                = 4;       // 0..7
     uint8_t wdth              = 2;       // 0..15
@@ -100,8 +132,9 @@ struct Tunables {
     uint8_t min_num_lightning = 0;       // datasheet code: 0=1, 1=5, 2=9, 3=16
     bool    mask_dist         = false;
     bool    indoor            = false;   // false = outdoor
-    bool    modem_sleep_max   = true;    // WIFI_PS_MAX_MODEM
+    uint8_t modem_sleep       = PS_MAX;  // PS_NONE / PS_MIN / PS_MAX
     int16_t vbat_offset_mv    = 0;       // ±500 mV trim for per-chip Vref delta
+    uint16_t evt_interval_s   = 60;      // disturber/noise publish throttle; 0 = every event
 };
 Tunables tun;
 
@@ -114,7 +147,9 @@ constexpr const char* NVS_K_TUN_CAP = "tun_cap";
 constexpr const char* NVS_K_MIN_LT  = "min_lt";
 constexpr const char* NVS_K_MASK    = "mask_dist";
 constexpr const char* NVS_K_INDOOR  = "indoor";
-constexpr const char* NVS_K_PS_MAX  = "ps_max";
+constexpr const char* NVS_K_PS_MAX  = "ps_max";    // ≤ v0.4.0: bool; still written for downgrades
+constexpr const char* NVS_K_PS_MODE = "ps_mode";   // v0.4.1: PS_NONE / PS_MIN / PS_MAX
+constexpr const char* NVS_K_EVT_IVL = "evt_ivl_s";
 constexpr const char* NVS_K_VBAT_OFFSET = "vbat_off_mv";
 constexpr const char* NVS_K_MQTT_USER   = "mqtt_user";
 constexpr const char* NVS_K_MQTT_PASS   = "mqtt_pass";
@@ -156,6 +191,74 @@ uint32_t lastSuccessfulPublishMs = 0;
 uint8_t  mqttFailCount           = 0;
 
 char     lwtPayload[64];
+
+ChurnTracker<CHURN_MAX_RECONNECTS> churn(CHURN_WINDOW_MS);
+uint32_t      mqttReconnects = 0;     // since boot, reported in the heartbeat
+EventThrottle thrDisturber, thrNoise;
+Counters      hbPrevCounters;         // counters at the previous heartbeat, for rate_per_min
+uint32_t      hbPrevMs = 0;
+
+// ── Restart bookkeeping ──────────────────────────────────────────────────
+// Every deliberate restart goes through restartWith(), which leaves its cause
+// in RTC memory; that survives a software reset (not a power cut), so the next
+// boot can report *why* in status.boot_cause — e.g. "mqtt_churn" proves the
+// self-heal fired, "brownout" points at the supply.
+RTC_NOINIT_ATTR uint32_t rtcCauseMagic;
+RTC_NOINIT_ATTR char     rtcCause[16];
+constexpr uint32_t CAUSE_MAGIC = 0xA5935041;
+char bootCause[16] = "unknown";
+
+void restartWith(const char* cause) {
+    strncpy(rtcCause, cause, sizeof(rtcCause) - 1);
+    rtcCause[sizeof(rtcCause) - 1] = '\0';
+    rtcCauseMagic = CAUSE_MAGIC;
+    Serial.printf("[boot] restarting: %s\n", cause);
+    delay(500);
+    ESP.restart();
+}
+void resolveBootCause() {
+    esp_reset_reason_t r = esp_reset_reason();
+    const char* c;
+    switch (r) {
+        case ESP_RST_POWERON:   c = "power_on";  break;
+        case ESP_RST_EXT:       c = "external";  break;
+        case ESP_RST_SW:        c = "sw";        break;
+        case ESP_RST_PANIC:     c = "panic";     break;
+        case ESP_RST_INT_WDT:   c = "int_wdt";   break;
+        case ESP_RST_TASK_WDT:  c = "task_wdt";  break;
+        case ESP_RST_WDT:       c = "wdt";       break;
+        case ESP_RST_BROWNOUT:  c = "brownout";  break;
+        case ESP_RST_DEEPSLEEP: c = "deepsleep"; break;
+        default:                c = "other";     break;
+    }
+    if (r == ESP_RST_SW && rtcCauseMagic == CAUSE_MAGIC) {
+        rtcCause[sizeof(rtcCause) - 1] = '\0';
+        c = rtcCause;
+    }
+    strncpy(bootCause, c, sizeof(bootCause) - 1);
+    bootCause[sizeof(bootCause) - 1] = '\0';
+    rtcCauseMagic = 0;   // consume, so a later unexplained reset isn't misattributed
+}
+
+// Keep a freshly OTA-flashed image on probation until it has reached MQTT:
+// the Arduino core would otherwise mark it valid at boot. If it restarts for
+// any reason before markAppValidIfPending() runs, the bootloader rolls back
+// to the previous image. A USB-flashed image is never pending, so this is a
+// no-op for it. extern "C": the core's weak default is a C function, and a
+// C++-mangled definition would silently not replace it (checked with nm).
+extern "C" bool verifyRollbackLater() { return true; }
+bool appValidated = false;
+void markAppValidIfPending() {
+    if (appValidated) return;
+    appValidated = true;
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t st;
+    if (running && esp_ota_get_state_partition(running, &st) == ESP_OK &&
+        st == ESP_OTA_IMG_PENDING_VERIFY) {
+        esp_ota_mark_app_valid_cancel_rollback();
+        Serial.println("[ota] new image reached MQTT — marked valid, rollback cancelled");
+    }
+}
 
 // ── Time helpers ─────────────────────────────────────────────────────────
 bool waitForNtpSync(uint32_t timeoutMs) {
@@ -235,7 +338,14 @@ void loadTunables() {
     tun.min_num_lightning = p.getUChar(NVS_K_MIN_LT,  tun.min_num_lightning);
     tun.mask_dist         = p.getBool (NVS_K_MASK,    tun.mask_dist);
     tun.indoor            = p.getBool (NVS_K_INDOOR,  tun.indoor);
-    tun.modem_sleep_max   = p.getBool (NVS_K_PS_MAX,  tun.modem_sleep_max);
+    // ps_mode wins; a unit upgraded from ≤ v0.4.0 only has the ps_max bool.
+    if (p.isKey(NVS_K_PS_MODE)) {
+        tun.modem_sleep = p.getUChar(NVS_K_PS_MODE, tun.modem_sleep);
+        if (tun.modem_sleep > PS_MAX) tun.modem_sleep = PS_MAX;
+    } else {
+        tun.modem_sleep = p.getBool(NVS_K_PS_MAX, tun.modem_sleep == PS_MAX) ? PS_MAX : PS_MIN;
+    }
+    tun.evt_interval_s    = p.getUShort(NVS_K_EVT_IVL, tun.evt_interval_s);
     tun.vbat_offset_mv    = p.getShort(NVS_K_VBAT_OFFSET, tun.vbat_offset_mv);
 
     // MQTT credentials — String form keeps the compiled-in default
@@ -256,7 +366,9 @@ void saveTunables() {
     p.putUChar(NVS_K_MIN_LT,  tun.min_num_lightning);
     p.putBool (NVS_K_MASK,    tun.mask_dist);
     p.putBool (NVS_K_INDOOR,  tun.indoor);
-    p.putBool (NVS_K_PS_MAX,  tun.modem_sleep_max);
+    p.putUChar(NVS_K_PS_MODE, tun.modem_sleep);
+    p.putBool (NVS_K_PS_MAX,  tun.modem_sleep == PS_MAX);   // what v0.4.0 would read back
+    p.putUShort(NVS_K_EVT_IVL, tun.evt_interval_s);
     p.putShort(NVS_K_VBAT_OFFSET, tun.vbat_offset_mv);
     p.end();
 }
@@ -387,14 +499,15 @@ void checkBootButtonForReset() {
             attachMqttParams(wm);
             wm.startConfigPortal(WIFI_AP_SSID, WIFI_AP_PASS);
             commitMqttParamsIfChanged();
-            ESP.restart();
+            restartWith("portal");
         }
         delay(50);
     }
 }
 void applyModemSleep() {
-    WiFi.setSleep(tun.modem_sleep_max ? WIFI_PS_MAX_MODEM : WIFI_PS_MIN_MODEM);
-    Serial.printf("[wifi] modem sleep = %s\n", tun.modem_sleep_max ? "max" : "min");
+    WiFi.setSleep(tun.modem_sleep == PS_NONE ? WIFI_PS_NONE :
+                  tun.modem_sleep == PS_MIN  ? WIFI_PS_MIN_MODEM : WIFI_PS_MAX_MODEM);
+    Serial.printf("[wifi] modem sleep = %s\n", psName(tun.modem_sleep));
 }
 void wifiSetup() {
     WiFi.mode(WIFI_STA);
@@ -406,8 +519,8 @@ void wifiSetup() {
                   WIFI_AP_SSID, WIFI_AP_PASS);
     if (!wm.autoConnect(WIFI_AP_SSID, WIFI_AP_PASS)) {
         Serial.println("[wifi] portal timeout / failed — restarting");
-        delay(1000);
-        ESP.restart();
+        delay(500);
+        restartWith("portal_timeout");
     }
     commitMqttParamsIfChanged();
     Serial.printf("[wifi] connected, RSSI %d dBm, IP %s\n",
@@ -418,8 +531,7 @@ void wifiWaitForReconnect() {
     while (WiFi.status() != WL_CONNECTED) {
         if (millis() - start > WIFI_RECONNECT_TIMEOUT_MS) {
             Serial.println("[wifi] no reconnect within timeout — restarting");
-            delay(500);
-            ESP.restart();
+            restartWith("wifi_timeout");
         }
         delay(500);
     }
@@ -460,8 +572,7 @@ void mqttConnect() {
         mqttFailCount++;
         if (mqttFailCount >= MQTT_MAX_FAILS) {
             Serial.println("[mqtt] max failures reached, restarting");
-            delay(500);
-            ESP.restart();
+            restartWith("mqtt_fail");
         }
         Serial.printf("[mqtt] failed rc=%d, retry in 5s\n", mqtt.state());
         delay(5000);
@@ -487,7 +598,9 @@ void publishStatus(const char* event) {
     doc["mask_dist"]         = tun.mask_dist;
     doc["min_num_lightning"] = minNumMap[tun.min_num_lightning & 0x03];
     doc["afe_gb"]            = tun.indoor ? "indoor" : "outdoor";
-    doc["modem_sleep"]       = tun.modem_sleep_max ? "max" : "min";
+    doc["modem_sleep"]       = psName(tun.modem_sleep);
+    doc["evt_interval_s"]    = tun.evt_interval_s;
+    doc["boot_cause"]        = bootCause;
     doc["vbat_mv"]           = readVbat_mV();
     doc["vbat_offset_mv"]    = tun.vbat_offset_mv;
     // Back-compat aliases for any subscriber that still reads the Python-style keys.
@@ -497,6 +610,10 @@ void publishStatus(const char* event) {
     doc["calib_srco"]        = calib_srco;
 
     char buf[512];
+    if (measureJson(doc) >= sizeof(buf)) {   // would truncate into invalid JSON
+        Serial.printf("[mqtt] status too big (%u bytes), not published\n", (unsigned)measureJson(doc));
+        return;
+    }
     size_t n = serializeJson(doc, buf, sizeof(buf));
     bool ok = mqtt.publish(TOPIC_STATUS, (const uint8_t*)buf, n, true);
     if (ok) {
@@ -507,16 +624,28 @@ void publishStatus(const char* event) {
 }
 void publishHeartbeat() {
     char ts[24]; isoNow(ts, sizeof(ts));
-    char buf[320];
+    // Events per minute since the previous heartbeat (since boot for the first).
+    // With events throttled on the wire, this is where the real rate shows.
+    uint32_t now = millis();
+    float mins = (now - hbPrevMs) / 60000.0f;
+    if (mins <= 0) mins = 1.0f / 60000.0f;
+    float distRate  = (counters.disturber - hbPrevCounters.disturber) / mins;
+    float noiseRate = (counters.noise     - hbPrevCounters.noise)     / mins;
+    char buf[384];
     snprintf(buf, sizeof(buf),
         "{\"alive\":true,\"ts\":\"%s\",\"uptime_s\":%lu,\"rssi\":%d,"
         "\"vbat_mv\":%lu,"
         "\"counters\":{\"lightning\":%lu,\"disturber\":%lu,"
-        "\"noise\":%lu,\"irq\":%lu}}",
+        "\"noise\":%lu,\"irq\":%lu},"
+        "\"rate_per_min\":{\"disturber\":%.1f,\"noise\":%.1f},"
+        "\"mqtt_reconnects\":%lu}",
         ts, (unsigned long)uptimeSeconds(), WiFi.RSSI(),
         (unsigned long)readVbat_mV(),
         (unsigned long)counters.lightning, (unsigned long)counters.disturber,
-        (unsigned long)counters.noise,     (unsigned long)counters.irq);
+        (unsigned long)counters.noise,     (unsigned long)counters.irq,
+        distRate, noiseRate, (unsigned long)mqttReconnects);
+    hbPrevCounters = counters;
+    hbPrevMs       = now;
     if (mqtt.publish(TOPIC_HB, buf, true)) {
         lastSuccessfulPublishMs = millis();
     }
@@ -577,19 +706,29 @@ void handleAs3935Event() {
         Serial.printf("[as3935] ⚡ lightning d=%ukm e=%lu\n",
                       distance, (unsigned long)energy);
     } else if (intReg == INT_DISTURBER) {
+        // Throttled (v0.4.1): one publish per evt_interval_s, with "count" =
+        // events it stands for. The full tally is counters.disturber in the hb.
         counters.disturber++;
-        snprintf(buf, sizeof(buf),
-            "{\"event\":\"disturber\",\"timestamp\":\"%s\"}", ts);
-        mqtt.publish(TOPIC_EVENT, buf);
-        publishLastEvent("disturber", 0, 0);
-        Serial.println("[as3935] ⚠ disturber");
+        uint32_t n = thrDisturber.onEvent(millis(), tun.evt_interval_s * 1000UL);
+        if (n) {
+            snprintf(buf, sizeof(buf),
+                "{\"event\":\"disturber\",\"timestamp\":\"%s\",\"count\":%lu}",
+                ts, (unsigned long)n);
+            mqtt.publish(TOPIC_EVENT, buf);
+            publishLastEvent("disturber", 0, 0);
+            Serial.printf("[as3935] ⚠ disturber (×%lu)\n", (unsigned long)n);
+        }
     } else if (intReg == INT_NOISE) {
         counters.noise++;
-        snprintf(buf, sizeof(buf),
-            "{\"event\":\"noise\",\"timestamp\":\"%s\"}", ts);
-        mqtt.publish(TOPIC_EVENT, buf);
-        publishLastEvent("noise", 0, 0);
-        Serial.println("[as3935] 📡 noise");
+        uint32_t n = thrNoise.onEvent(millis(), tun.evt_interval_s * 1000UL);
+        if (n) {
+            snprintf(buf, sizeof(buf),
+                "{\"event\":\"noise\",\"timestamp\":\"%s\",\"count\":%lu}",
+                ts, (unsigned long)n);
+            mqtt.publish(TOPIC_EVENT, buf);
+            publishLastEvent("noise", 0, 0);
+            Serial.printf("[as3935] 📡 noise (×%lu)\n", (unsigned long)n);
+        }
     } else {
         Serial.printf("[as3935] spurious IRQ, INT=0x%X\n", intReg);
     }
@@ -633,10 +772,16 @@ bool handleSet(const char* key, JsonVariant value, char* err, size_t errlen) {
         writeAFEGB(tun.indoor);
     } else if (strcmp(key, "modem_sleep") == 0) {
         const char* s = value.as<const char*>();
-        if (s && strcmp(s, "max") == 0)      tun.modem_sleep_max = true;
-        else if (s && strcmp(s, "min") == 0) tun.modem_sleep_max = false;
-        else { snprintf(err, errlen, "modem_sleep must be 'max' or 'min'"); return false; }
+        if      (s && strcmp(s, "max")  == 0) tun.modem_sleep = PS_MAX;
+        else if (s && strcmp(s, "min")  == 0) tun.modem_sleep = PS_MIN;
+        else if (s && strcmp(s, "none") == 0) tun.modem_sleep = PS_NONE;
+        else { snprintf(err, errlen, "modem_sleep must be 'max', 'min' or 'none'"); return false; }
         applyModemSleep();
+    } else if (strcmp(key, "evt_interval_s") == 0) {
+        // Disturber/noise publish throttle. 0 = publish every event (v0.4.0).
+        int v = value.as<int>();
+        if (v < 0 || v > 3600) { snprintf(err, errlen, "evt_interval_s out of range 0..3600"); return false; }
+        tun.evt_interval_s = (uint16_t)v;
     } else if (strcmp(key, "vbat_offset_mv") == 0) {
         // Per-chip Vref trim. ±500 mV bracket is generous — eFuse-calibrated
         // chips need <50 mV typically; the wider range accommodates uncalibrated
@@ -656,6 +801,7 @@ bool handleSet(const char* key, JsonVariant value, char* err, size_t errlen) {
 }
 
 void calibrateTunCap();  // forward decl
+bool otaOpen();          // forward decl
 
 void handleAction(const char* action) {
     if (strcmp(action, "republish_status") == 0) {
@@ -669,13 +815,24 @@ void handleAction(const char* action) {
     } else if (strcmp(action, "reboot") == 0) {
         publishAck(true, "action:reboot");
         delay(1500);   // first-ever NVS commit on a fresh namespace needs time
-        ESP.restart();
+        restartWith("cmd_reboot");
     } else if (strcmp(action, "factory_reset_wifi") == 0) {
         publishAck(true, "action:factory_reset_wifi");
         delay(1500);
         WiFiManager wm;
         wm.resetSettings();
-        ESP.restart();
+        restartWith("cmd_wifi_reset");
+    } else if (strcmp(action, "ota_open") == 0) {
+        // Opens the HTTP update server for OTA_WINDOW_MS (re-sending extends it).
+        // Refused without an MQTT password: it doubles as the upload password.
+        if (otaOpen()) {
+            char ackbuf[96];
+            snprintf(ackbuf, sizeof(ackbuf), "action:ota_open url=http://%s/update for %lus",
+                     WiFi.localIP().toString().c_str(), (unsigned long)(OTA_WINDOW_MS / 1000));
+            publishAck(true, ackbuf);
+        } else {
+            publishAck(false, "action:ota_open", "no MQTT password in NVS (it is the OTA password)");
+        }
     } else if (strcmp(action, "query_vbat") == 0) {
         // One-shot snapshot — useful when the dashboard wants a fresh reading
         // outside the heartbeat cadence (e.g. after solar panel inspection).
@@ -787,13 +944,95 @@ void calibrateTunCap() {
     attachInterrupt(digitalPinToInterrupt(PIN_AS3935_IRQ), onAs3935Irq, RISING);
 }
 
+// ── OTA over HTTP ────────────────────────────────────────────────────────
+// Closed by default. `{"action":"ota_open"}` starts a WebServer on OTA_PORT for
+// OTA_WINDOW_MS; then (see ota.sh)
+//   curl -u ota:<mqtt password> -F firmware=@firmware.bin http://<ip>/update
+// The Mac (Trusted VLAN) can open connections into the IoT VLAN, but IoT can't
+// call back out, which is why this is a push to the device and not ArduinoOTA
+// (whose device side connects back to the uploader). A successfully written
+// image reboots straight into probation (see markAppValidIfPending()).
+WebServer* otaServer   = nullptr;
+uint32_t   otaOpenedMs = 0;
+bool       otaDenied   = false;   // this upload failed auth: don't touch flash
+bool       otaWritten  = false;   // Update.end(true) succeeded
+bool       otaReboot   = false;
+
+bool otaAuthorised() {
+    if (otaServer->authenticate(OTA_USER, mqttPass)) return true;
+    otaServer->requestAuthentication(BASIC_AUTH, "as3935-ota");
+    return false;
+}
+
+bool otaOpen() {
+    if (mqttPass[0] == '\0') return false;
+    otaOpenedMs = millis();
+    if (otaServer) return true;   // already open: window extended
+    otaServer = new WebServer(OTA_PORT);
+    otaServer->on("/", HTTP_GET, []() {
+        if (!otaAuthorised()) return;
+        otaServer->send(200, "text/plain",
+            String("vu2cpl-as3935-bridge ") + FIRMWARE_VERSION +
+            " - POST firmware.bin as form field 'firmware' to /update\n");
+    });
+    otaServer->on("/update", HTTP_POST,
+        []() {   // after the body: report and, on success, reboot
+            if (!otaAuthorised()) return;
+            if (otaWritten) {
+                otaServer->send(200, "text/plain", "OK - rebooting into the new image\n");
+                otaReboot = true;
+            } else {
+                otaServer->send(500, "text/plain",
+                    String("FAIL: ") + (Update.hasError() ? Update.errorString() : "no firmware received") + "\n");
+            }
+        },
+        []() {   // body chunks
+            HTTPUpload& up = otaServer->upload();
+            if (up.status == UPLOAD_FILE_START) {
+                otaWritten = false;
+                otaDenied  = !otaServer->authenticate(OTA_USER, mqttPass);
+                if (otaDenied) { Serial.println("[ota] upload refused: bad credentials"); return; }
+                Serial.printf("[ota] receiving %s\n", up.filename.c_str());
+                if (!Update.begin(UPDATE_SIZE_UNKNOWN)) Update.printError(Serial);
+            } else if (otaDenied) {
+                return;
+            } else if (up.status == UPLOAD_FILE_WRITE) {
+                if (Update.write(up.buf, up.currentSize) != up.currentSize) Update.printError(Serial);
+            } else if (up.status == UPLOAD_FILE_END) {
+                otaWritten = Update.end(true);
+                if (otaWritten) Serial.printf("[ota] %u bytes written, image OK\n", (unsigned)up.totalSize);
+                else            Update.printError(Serial);
+            } else if (up.status == UPLOAD_FILE_ABORTED) {
+                Update.abort();
+                Serial.println("[ota] upload aborted");
+            }
+        });
+    otaServer->begin();
+    Serial.printf("[ota] open on :%u for %lus\n", OTA_PORT, (unsigned long)(OTA_WINDOW_MS / 1000));
+    return true;
+}
+
+void otaLoop() {
+    if (!otaServer) return;
+    otaServer->handleClient();
+    if (otaReboot) {
+        delay(300);   // let the HTTP response flush
+        restartWith("ota");
+    }
+    if (millis() - otaOpenedMs > OTA_WINDOW_MS) {
+        otaServer->stop();
+        delete otaServer;
+        otaServer = nullptr;
+        Serial.println("[ota] window closed");
+    }
+}
+
 // ── Watchdog ─────────────────────────────────────────────────────────────
 void checkPublishWatchdog() {
     if (lastSuccessfulPublishMs == 0) return;  // not armed until first success
     if (millis() - lastSuccessfulPublishMs > PUBLISH_WDT_MS) {
         Serial.println("[wdt] no successful publish in 10 min — restarting");
-        delay(500);
-        ESP.restart();
+        restartWith("publish_wdt");
     }
 }
 
@@ -802,6 +1041,8 @@ void setup() {
     Serial.begin(115200);
     delay(200);
     Serial.printf("\n[boot] vu2cpl-as3935-bridge %s\n", FIRMWARE_VERSION);
+    resolveBootCause();
+    Serial.printf("[boot] cause: %s\n", bootCause);
 
     // Suppress the WiFi driver's chatty warnings (CCMP-replay,
     // AUTH_FAIL retries, etc.). Real errors (E level) still print.
@@ -809,10 +1050,10 @@ void setup() {
 
     loadTunables();
     Serial.printf("[nvs] nf=%u wdth=%u srej=%u tun_cap=%u mask=%d "
-                  "min_lt=%u indoor=%d ps_max=%d vbat_off=%d\n",
+                  "min_lt=%u indoor=%d ps=%s vbat_off=%d evt_ivl=%us\n",
                   tun.nf, tun.wdth, tun.srej, tun.tun_cap, tun.mask_dist,
-                  tun.min_num_lightning, tun.indoor, tun.modem_sleep_max,
-                  tun.vbat_offset_mv);
+                  tun.min_num_lightning, tun.indoor, psName(tun.modem_sleep),
+                  tun.vbat_offset_mv, tun.evt_interval_s);
     Serial.printf("[nvs] mqtt_user=%s mqtt_pass=%s\n",
                   mqttUser, mqttPass[0] ? "(set)" : "(empty)");
 
@@ -843,6 +1084,7 @@ void setup() {
     mqttConnect();
     as3935Init();
     publishStatus("ready");
+    if (lastSuccessfulPublishMs) markAppValidIfPending();
 
     Serial.printf("[loop] entering main loop, IRQ on GPIO%d\n", PIN_AS3935_IRQ);
 }
@@ -850,10 +1092,18 @@ void setup() {
 void loop() {
     if (WiFi.status() != WL_CONNECTED) wifiWaitForReconnect();
     if (!mqtt.connected()) {
+        mqttReconnects++;
+        if (churn.record(millis())) {
+            Serial.printf("[mqtt] %u reconnects within %lu min — restarting\n",
+                          CHURN_MAX_RECONNECTS, (unsigned long)(CHURN_WINDOW_MS / 60000));
+            restartWith("mqtt_churn");
+        }
         mqttConnect();
         publishStatus("ready");
     }
     mqtt.loop();
+    if (!appValidated && lastSuccessfulPublishMs) markAppValidIfPending();
+    otaLoop();
 
     if (irqFired) {
         irqFired = false;
