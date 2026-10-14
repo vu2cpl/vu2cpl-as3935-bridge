@@ -892,3 +892,25 @@ deployment section, and a one-paragraph summary lives in the
   client entry. (2) A firmware option for `WIFI_PS_NONE` (no sleep) could be added, since it's
   mains powered. (3) The disturber flood that stopped at 21:43 on 8 Oct: worth correlating with the
   shack's local-QRM hunt (ubersdr-box HANDOVER, "Local QRM investigation").
+
+## 2026-10-14 — keepalive flapping recurred 04:31 → 12:14; same reboot fix; disturbers froze with it
+
+- **Recurrence of the 2026-10-10 fault.** The broker logged `as3935-bridge has exceeded timeout` from
+  **04:31:15 IST**, every ~23 s, 861 times by 12:11. No heartbeat after 12:01:23. The 07:15 shack-health
+  run only WARNed (hb 4 min old). An 11:44 run passed (hb 25 s) by catching a good moment, and the 12:11
+  run FAILed (LWT offline, hb 10 min). Same "hb OK ≠ healthy link" trap as before.
+- **Fix (Manoj's go):** `{"action":"reboot"}` via Home Assistant's `mqtt.publish`, not retained, sent the
+  instant a fresh `ready` status arrived (12:14:09). Ack `{"ok":true,"cmd":"action:reboot"}` at 12:14:08,
+  back `ready` at 12:14:13, heartbeats every 30 s after that, zero broker timeouts since.
+- **New evidence on the disturber flood (open item 3 below):** the sensor's own `disturber` counter climbed
+  steadily at ~6.3/s (≈11,400 per 30 min, HA history) right up to **04:31**, then **froze at 2,027,148 at
+  the same moment the flapping began**. It stayed frozen until the reboot, and it was counting at ~6/s again
+  within 28 s of boot (166). 8 Oct looked the same: the flood "stopped" at 21:43, exactly when the link went
+  bad. Twice now the disturbers came straight back on reboot, so "the interference stopped" is unlikely.
+  **Hypothesis, not tested:** the ~6/s "disturbers" are the ESP32's own Wi-Fi activity reaching the AS3935
+  antenna. When the association goes stale the radio goes quiet, so the IRQs stop at the same time the
+  downstream MQTT dies. One test: compare the disturber rate with `modem_sleep` max vs min, or with Wi-Fi briefly
+  off. If true, the disturber count is useless as a QRM measure and also masks real lightning sensitivity.
+- **Also seen the same morning (probably unrelated):** the OpenWebRX RSP2 fell off USB on the ubersdr box
+  at 04:18, 13 min earlier. Different host and different network. If the flapping recurs, still check
+  UniFi for a Wi-Fi event or AP change around its start time (open item 1 below).
