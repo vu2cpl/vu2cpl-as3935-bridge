@@ -26,9 +26,6 @@ bottom (they're not just deleted so the work log stays intact).
   that drops sharply with the throttle on means the ESP32's own WiFi
   makes them; then try more distance between the boxes. See HANDOVER
   2026-10-14.
-- [ ] **Dashboard: offer `none` in the Modem sleep dropdown** (vu2cpl-shack
-  Master Dashboard `a35ms`, and `nodered/build-flow.py` here). Until then
-  `none` is set with `mosquitto_pub`; the dropdown just shows blank.
 - [ ] **(next firmware) Decouple MQTT-cred save from WiFi connect.**
   *(Was tagged v0.4.1; left out of the 2026-10-14 v0.4.1, which was scoped
   to the self-heal / throttle / OTA / modem-sleep work.)* Current
@@ -100,6 +97,10 @@ bottom (they're not just deleted so the work log stays intact).
 Newest first. Kept short so the file stays a work log, not a
 graveyard.
 
+- [x] **`none` in the Modem sleep dropdown** — 2026-10-14 · D1 Master
+  Dashboard (`a35ms` in vu2cpl-shack flows) and `nodered/build-flow.py` +
+  regenerated `as3935-control-flow.json` here. The Vue `/shack` card already
+  had NONE / MIN / MAX.
 - [x] **v0.4.1 written: self-heal on MQTT churn, `boot_cause`, disturber/
   noise throttle, OTA with rollback, `modem_sleep` none** — 2026-10-14 ·
   built + host-tested; not yet flashed (see the top of this list). OTA

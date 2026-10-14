@@ -162,7 +162,7 @@ HTML = """\
       <span class="rng">storm filter</span></div>
     <div class="trow"><span class="lbl">Modem sleep</span>
       <select id="a35ms" onchange="a35.set('modem_sleep', this.value)">
-        <option value="max">max</option><option value="min">min</option>
+        <option value="max">max</option><option value="min">min</option><option value="none">none</option>
       </select>
       <span class="rng">WiFi PS</span></div>
   </div>

@@ -290,7 +290,7 @@ After any panel edit + `python3 nodered/build-flow.py` + re-import:
 | `mask_dist` | true/false | Suppress disturber events |
 | `min_num_lightning` | 1 / 5 / 9 / 16 | Strikes before IRQ asserts |
 | `afe_gb` | `"indoor"` / `"outdoor"` | Analog front-end gain |
-| `modem_sleep` | `"max"` / `"min"` / `"none"` | WiFi modem sleep aggressiveness. `none` (v0.4.1) keeps the radio always on, for a mains-powered unit. The dashboard's dropdown only offers max/min; send `none` with `mosquitto_pub` |
+| `modem_sleep` | `"max"` / `"min"` / `"none"` | WiFi modem sleep aggressiveness. `none` (v0.4.1) keeps the radio always on, for a mains-powered unit. Both shack dashboards offer it (the D1 dropdown since 2026-10-14) |
 | `evt_interval_s` | 0–3600 | (v0.4.1) Publish at most one disturber and one noise event per this many seconds; default 60. `0` = every event (v0.4.0 behaviour). Lightning is never throttled |
 | `vbat_offset_mv` | −500 .. +500 | Per-chip Vref trim for the battery ADC. Add this many millivolts to every `vbat_mv` reading. Most ESP32s need 0 or close to it. |
 
