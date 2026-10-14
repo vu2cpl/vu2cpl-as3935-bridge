@@ -7,10 +7,12 @@
 
 ## Status
 
-**v0.4.2 written 2026-10-14 (built, not yet pushed to the device):** adds the
+**v0.4.2 on the device since 2026-10-14 17:44 (OTA, `boot_cause: ota`):** adds the
 `wifi_off_test` action (disturbers counted with the radio on / off / on,
 result retained on `lightning/as3935/test`) and holds a lightning event that
-fails to publish until MQTT is back. Goes on with `./ota.sh`.
+fails to publish until MQTT is back. First run 17:45: the radio-off window
+counted as many disturbers as the on windows, so the ESP32's WiFi isn't the
+source (entry at the end).
 
 **v0.4.1 running on the deployed unit since 2026-10-14 13:54 (USB), OTA proven 13:55.**
 Self-heal on MQTT churn (5 reconnects in 10 min ⇒ restart), `boot_cause`
@@ -1041,3 +1043,28 @@ takes the sensor offline on purpose, a lightning event whose publish fails is no
 on reconnect with `"delayed":true`; that also helps during any flap. Node-RED subscribes to exact
 `lightning/as3935/*` topics only, so the new `test` topic can't be mistaken for an event. Not testable without
 the board: the radio-off / rejoin cycle itself; the result format was checked on the host (valid JSON, 357 B max).
+
+### 2026-10-14 17:45 — WiFi-off test: the radio isn't the source either
+
+`{"action":"wifi_off_test","secs":60}` via HA `mqtt.publish`, sensor installed, wall power, `modem_sleep:none`:
+
+| Window | Disturbers | Per min |
+|---|---|---|
+| on_before | 405 | 405.0 |
+| **off (radio fully off)** | **398** | **398.0** |
+| on_after | 403 | 403.0 |
+
+Rejoin 2.2 s; no LWT/offline seen; noise 0, lightning 0. The test machinery works first time on hardware.
+
+- **Ruled out now:** the per-event MQTT traffic (A/B/A, earlier) and the ESP32's WiFi radio altogether.
+- **Left:** the rest of the board (CPU / clocks / its supply), the wall adapter that powers the unit since
+  today, the 5-wire harness, or genuine ambient noise at the site (~6.7/s, very steady, day and night).
+  Cheapest next check is physical: unplug the wall adapter for ~2 min so the unit runs on its 18650, and
+  watch `rate_per_min`. A drop means the adapter (or its cable) is the source.
+- **What this says about the 8 Oct / 14 Oct counter freeze:** since disturbers carry on with the radio off,
+  the freeze wasn't the source going quiet. The counter stopped because the firmware stopped servicing the
+  IRQ during the bad-link state. Candidate mechanism: the IRQ is edge-triggered (RISING) and the AS3935 holds
+  the line high until register 0x03 is read, so one missed or failed read leaves it latched high and no new
+  edge ever arrives. Cheap safeguard for a future build: in `loop()`, if the IRQ pin has been high for > ~1 s
+  with no `irqFired`, read 0x03 to unlatch it. Not seen since v0.4.1's self-heal, which reboots out of that
+  state anyway.

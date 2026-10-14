@@ -24,7 +24,13 @@ bottom (they're not just deleted so the work log stays intact).
   test: identical rate with the throttle on (397.3/min) and off (397.4),
   so the MQTT publishing isn't causing them. Next: a firmware action that
   turns WiFi off for ~60 s and counts disturbers (OTA makes this cheap).
-  **v0.4.2 has it** (`wifi_off_test`): push with `./ota.sh`, then run it.
+  **Done 2026-10-14 17:45 with v0.4.2's `wifi_off_test`: 405 / 398 / 403 per
+  min (on / radio off / on), so it's not the WiFi radio either.** Next:
+  unplug the wall adapter for ~2 min (run on the 18650) and watch the rate.
+- [ ] **IRQ stuck-high safeguard (small firmware item).** Edge-triggered IRQ +
+  a missed read of 0x03 leaves the line latched and the counter frozen
+  (likely what froze it on 8 Oct and 14 Oct). Poll the pin in `loop()`; if
+  high > ~1 s with no ISR, read 0x03. See HANDOVER 2026-10-14 17:45.
   ~0 with the radio off ⇒ the ESP32 is the source (fix: distance /
   shielding / ferrites). See HANDOVER 2026-10-14.
 - [ ] **(next firmware) Decouple MQTT-cred save from WiFi connect.**
