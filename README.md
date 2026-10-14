@@ -143,7 +143,8 @@ bring-up checklist.
 stall while MQTT and the heartbeat look fine (a latched IRQ line). The
 firmware now releases a line stuck high for > 1 s, and if IRQs stop for 5 min
 while they normally run at ≥ 20/min it re-initialises the chip, then
-restarts if that didn't help (`boot_cause: irq_silence`).
+restarts if that didn't help (`boot_cause: irq_silence`). GitHub release:
+[v0.4.3](https://github.com/vu2cpl/vu2cpl-as3935-bridge/releases/tag/v0.4.3).
 
 **v0.4.2 — WiFi-off disturber test (2026-10-14).** New `wifi_off_test`
 action counts disturbers with the radio on, off and on again, to tell
@@ -210,10 +211,10 @@ disconnect logic in [`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack)
 consumes this bridge's `lightning/as3935` event stream as its primary
 strike source.
 
-**Open work** lives in [`TODO.md`](TODO.md) — near-term is the
-USB flash of v0.4.1 and the disturber-source test it enables; OTA
-arrived in v0.4.1 (HTTP push, not ArduinoOTA — see BUILD.md); the
-deep-sleep + EXT0-wake milestone is unscheduled. Cross-repo: shack-side Telegram alert on
+**Open work** lives in [`TODO.md`](TODO.md) — near-term is watching
+for brownouts with `modem_sleep: none` and replacing the weak 18650;
+the disturber-source hunt is parked (not the MQTT traffic, not the
+WiFi radio); the deep-sleep + EXT0-wake milestone is unscheduled. Cross-repo: shack-side Telegram alert on
 low `vbat_mv` is tracked in
 [`vu2cpl-shack`](https://github.com/vu2cpl/vu2cpl-shack).
 

@@ -12,6 +12,9 @@ interrupt-path safeguards. Releases an IRQ line latched high > 1 s
 (`irq_unlatch`), and after 5 min with no IRQ (while the rate normally runs
 ≥ 20/min) re-inits the chip (`as3935_reinit`), then restarts 5 min later if
 still silent (`boot_cause: irq_silence`). No daily reboot (Manoj's call).
+Published as the GitHub release
+[`v0.4.3`](https://github.com/vu2cpl/vu2cpl-as3935-bridge/releases/tag/v0.4.3) on 2026-10-14, the
+repo's first release (source only; notes cover v0.4.1–v0.4.3).
 
 **v0.4.2 on the device since 2026-10-14 17:44 (OTA, `boot_cause: ota`):** adds the
 `wifi_off_test` action (disturbers counted with the radio on / off / on,
