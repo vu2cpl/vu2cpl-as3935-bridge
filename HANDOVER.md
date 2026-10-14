@@ -7,13 +7,16 @@
 
 ## Status
 
-**v0.4.1 written, 2026-10-14 — built and host-tested, NOT yet flashed.**
+**v0.4.1 running on the deployed unit since 2026-10-14 13:54 (USB), OTA proven 13:55.**
 Self-heal on MQTT churn (5 reconnects in 10 min ⇒ restart), `boot_cause`
 in status, disturber/noise publishes throttled to one a minute
 (`evt_interval_s`) with real rates in the heartbeat, OTA over HTTP opened
 by `{"action":"ota_open"}` with bootloader rollback, `modem_sleep` gains
-`none`. The deployed unit still runs v0.4.0; the first v0.4.1 install is a
-USB flash (`./flash.sh`); after that `./ota.sh`. See
+`none`. USB-flashed 13:54, then `./ota.sh` re-pushed the same image: the
+sensor came back at 13:55:42 with `boot_cause: ota`, `modem_sleep: min`
+carried over from v0.4.0's NVS. `modem_sleep` set to `none` at 13:56:57
+(ping 266 ms → 13 ms); a `brownout` reboot followed at 13:57:26, see the
+v0.4.1 entry at the end of this file. See
 [`CHANGELOG.md`](CHANGELOG.md) v0.4.1 and the 2026-10-14 v0.4.1 entry at
 the end of this file.
 
@@ -969,3 +972,27 @@ the device still runs v0.4.0.** v0.4.0 has no OTA, so the first install is a USB
   build with a different core. Build the USB flash on this Mac, or check the core version first.
 - **Not in this release:** the MQTT-cred save gating fix that was earmarked "v0.4.1" (TODO, now "next
   firmware"), and a `none` option in the dashboards' Modem sleep dropdown (vu2cpl-shack flow change).
+
+### 2026-10-14 afternoon — v0.4.1 flashed and OTA-verified; first readings
+
+- **13:54 USB flash** from the Mac mini (`PATH=~/.platformio/penv/bin:$PATH ./flash.sh`, port
+  `/dev/cu.usbserial-0001`, MAC `20:43:a8:63:4d:9c`). The broker saw the old session time out at 13:54:32
+  and v0.4.1 connect at 13:54:46.
+- **13:55 OTA:** `./ota.sh` (same image) → ack `url=http://192.168.30.215/update for 600s` → `OK - rebooting`
+  → back at 13:55:42 with `fw v0.4.1`, **`boot_cause: ota`**, `modem_sleep: min` (migrated from `ps_max`),
+  `evt_interval_s: 60`. Heartbeat carries `rate_per_min` and `mqtt_reconnects: 0`.
+- **ota.sh bug found and fixed:** its first run printed `OK … boot_cause=power_on` before the OTA reboot,
+  because it matched the *retained* status of the USB-flashed boot (same version). Now it subscribes with
+  `-R` (no retained) and only reports success for a fresh `ready` with the target `fw` **and**
+  `boot_cause: ota`; anything else is reported as a probable rollback.
+- **13:56:57 `modem_sleep: none`** (Manoj's call), sent via HA `mqtt.publish`; ack OK, persisted. Ping
+  RTT fell from ~266 ms (`min`) to ~13 ms: the radio really is always on.
+- **13:57:26 `boot_cause: brownout`.** At the same moment `vbat_mv` went from ~4.72 V (on USB at the Mac)
+  to 3.99 V (on the 18650), so the likeliest cause is the USB cable being pulled and the supply switching
+  over. To confirm: if it browns out again on its normal supply with `none`, the always-on radio's extra
+  current is too much for the supply path, and `modem_sleep` should go back to `min`.
+- **First disturber rates with the throttle on:** 426, 452, 236 and 350/min across the first heartbeats
+  (bench, then just after the brownout). That's the same order as before (~380/min average over 4 days),
+  so far no sign that per-event publishing was generating them. These readings were taken while the box
+  was being handled, so the proper A/B (`evt_interval_s` 60 vs 0) still needs the box back in its
+  installed position.

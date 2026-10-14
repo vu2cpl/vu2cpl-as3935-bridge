@@ -57,7 +57,9 @@ URL=$(printf '%s' "$ACK" | sed -n 's/.*url=\(http:[^ "]*\).*/\1/p')
 [ -n "$URL" ] || { echo "the device refused ota_open (see the ack above)" >&2; exit 1; }
 
 # 2. Upload. Watch for the new version from before the upload, so a quick reboot can't be missed.
-mosquitto_sub -h "$BROKER" -u "$MUSER" -P "$PW" -t lightning/as3935/status -W 180 > "$TMP/status" 2>/dev/null &
+# -R drops the retained status delivered on subscribe: it describes the boot *before* this upload and,
+# when re-pushing the same version, would match at once (it did on the first run, 2026-10-14).
+mosquitto_sub -h "$BROKER" -u "$MUSER" -P "$PW" -R -t lightning/as3935/status -W 180 > "$TMP/status" 2>/dev/null &
 WATCH=$!
 echo "uploading to $URL …"
 PWQ=${PW//\\/\\\\}; PWQ=${PWQ//\"/\\\"}   # escape for curl's quoted config syntax
@@ -68,18 +70,26 @@ if ! printf 'user = "ota:%s"\n' "$PWQ" | curl -sS --fail-with-body --max-time 24
     exit 1
 fi
 
-# 3. Wait for the device to come back reporting the new version.
-echo "waiting up to 3 min for the device to report $WANT …"
+# 3. Wait for the new image to report. Success = the target fw AND boot_cause "ota": the old image
+# coming back after a rollback reports the new image's restart reason instead (e.g. mqtt_fail), even
+# when both are the same version.
+echo "waiting up to 3 min for the device to report $WANT after the OTA reboot …"
 for _ in $(seq 1 180); do
-    if grep -q "\"fw\":\"$WANT\"" "$TMP/status" 2>/dev/null; then
+    if grep -q '"event":"ready"' "$TMP/status" 2>/dev/null; then
+        LINE=$(grep '"event":"ready"' "$TMP/status" | head -1)
         kill "$WATCH" 2>/dev/null || true
-        LINE=$(grep "\"fw\":\"$WANT\"" "$TMP/status" | tail -1)
-        echo "OK: running $WANT, boot_cause=$(printf '%s' "$LINE" | sed -n 's/.*"boot_cause":"\([^"]*\)".*/\1/p')"
-        exit 0
+        FW=$(printf '%s' "$LINE" | sed -n 's/.*"fw":"\([^"]*\)".*/\1/p')
+        CAUSE=$(printf '%s' "$LINE" | sed -n 's/.*"boot_cause":"\([^"]*\)".*/\1/p')
+        if [ "$FW" = "$WANT" ] && [ "$CAUSE" = ota ]; then
+            echo "OK: running $WANT, boot_cause=ota"
+            exit 0
+        fi
+        echo "came back as fw=$FW boot_cause=${CAUSE:-?} — not the new image (rolled back?)" >&2
+        exit 1
     fi
     kill -0 "$WATCH" 2>/dev/null || break
     sleep 1
 done
 kill "$WATCH" 2>/dev/null || true
-echo "did not see $WANT within 3 min. If status shows the old fw, the new image rolled back." >&2
+echo "no fresh status within 3 min — check: mosquitto_sub -t lightning/as3935/status -C 1" >&2
 exit 1

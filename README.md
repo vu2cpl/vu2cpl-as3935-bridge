@@ -138,8 +138,8 @@ bring-up checklist.
 
 ## Status
 
-**v0.4.1 — self-heal, quieter events, OTA (2026-10-14, built, not yet
-flashed).** After two outages (2026-10-10, 2026-10-14) where the
+**v0.4.1 — self-heal, quieter events, OTA (2026-10-14, running on the
+deployed unit; OTA verified the same day).** After two outages (2026-10-10, 2026-10-14) where the
 sensor's MQTT link flapped every ~23 s for hours until someone sent
 `reboot`, the firmware now restarts itself after 5 MQTT reconnects in
 10 min, and reports why it last restarted (`boot_cause`). Disturber and
@@ -147,7 +147,7 @@ noise events are throttled to one publish a minute (they ran at ~6/s,
 about 12 MQTT publishes a second); the real rates ride the heartbeat.
 OTA over HTTP, opened on demand by `{"action":"ota_open"}`, with
 rollback. `modem_sleep` gains `none`. See [`CHANGELOG.md`](CHANGELOG.md).
-The first v0.4.1 install is a USB flash (v0.4.0 has no OTA).
+It went on by USB (v0.4.0 has no OTA); every update after that can use `./ota.sh`.
 
 **v0.3.0 — battery voltage telemetry (2026-05-17).** Firmware now
 publishes `vbat_mv` on `/hb` (every 30 s) and `/status` (on connect

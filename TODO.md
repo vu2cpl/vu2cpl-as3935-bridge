@@ -16,11 +16,10 @@ bottom (they're not just deleted so the work log stays intact).
   Done 2026-08-21 — flashed to the CP2102 board, `iot` password set
   via portal, serial confirms `[mqtt] connected as iot`, NVS
   `mqtt_pass` set. Ready for broker `allow_anonymous false`.
-- [ ] **USB-flash v0.4.1 to the deployed unit, then verify.** v0.4.0
-  has no OTA, so this one needs the cable. Afterwards check status shows
-  `"fw":"v0.4.1"`, `boot_cause`, `evt_interval_s: 60`, and that the hb
-  carries `rate_per_min` and `mqtt_reconnects`. Then try `./ota.sh` once
-  (re-pushing the same image is fine) to prove the OTA path end to end.
+- [x] **USB-flash v0.4.1 to the deployed unit, then verify.** Done 2026-10-14 13:54; OTA proven 13:55
+  (`boot_cause: ota`). See HANDOVER.
+- [ ] **Watch for brownouts with `modem_sleep: none`.** One at 13:57:26 on 2026-10-14, probably the USB
+  cable being pulled (vbat 4.72 → 3.99 V at the same moment). Another on its normal supply ⇒ back to `min`.
 - [ ] **Find out whether the disturbers are self-generated.** After the
   flash, note `rate_per_min.disturber` for an hour at `evt_interval_s`
   60, then an hour at 0 (every event published, as in v0.4.0). A rate

@@ -11,8 +11,9 @@ the `fw` field of every `lightning/as3935/status` MQTT payload.
 Self-healing and a much quieter event stream, after two outages
 (2026-10-08→10, 2026-10-14) where the MQTT link flapped every ~23 s for
 hours and only a manual `reboot` command fixed it. Plus OTA, so later
-fixes don't need a ladder. **Built and host-tested, not yet on the
-device**: the first install is a USB flash, because v0.4.0 has no OTA.
+fixes don't need a ladder. **On the deployed unit since 2026-10-14
+13:54** (USB, since v0.4.0 has no OTA); an `./ota.sh` re-push at 13:55
+came back with `boot_cause: ota`.
 
 ### Self-heal
 
