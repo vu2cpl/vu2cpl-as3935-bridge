@@ -32,10 +32,11 @@ bottom (they're not just deleted so the work log stays intact).
 - [ ] **The 18650 is weak (Manoj, 2026-10-14).** The unit effectively
   depends on wall power; a mains blip may now mean a brownout reset
   (`boot_cause: brownout`) rather than a ride-through. Replace when convenient.
-- [ ] **IRQ stuck-high safeguard (small firmware item).** Edge-triggered IRQ +
-  a missed read of 0x03 leaves the line latched and the counter frozen
-  (likely what froze it on 8 Oct and 14 Oct). Poll the pin in `loop()`; if
-  high > ~1 s with no ISR, read 0x03. See HANDOVER 2026-10-14 17:45.
+- [ ] **OTA v0.4.3 to the unit, then confirm** the heartbeat carries
+  `irq_unlatch` and `as3935_reinit` (both 0 normally).
+- [ ] *(idea)* shack-health: WARN when `rate_per_min.disturber` is 0 for a
+  sensor that normally runs ~400/min, as the outside view of a stalled
+  detection path (the firmware now acts on it itself).
   ~0 with the radio off ⇒ the ESP32 is the source (fix: distance /
   shielding / ferrites). See HANDOVER 2026-10-14.
 - [ ] **(next firmware) Decouple MQTT-cred save from WiFi connect.**
@@ -109,6 +110,8 @@ bottom (they're not just deleted so the work log stays intact).
 Newest first. Kept short so the file stays a work log, not a
 graveyard.
 
+- [x] **IRQ stuck-high safeguard + IRQ silence watchdog** — 2026-10-14 ·
+  v0.4.3 (written; see CHANGELOG). No daily reboot, by Manoj's choice.
 - [x] **`none` in the Modem sleep dropdown** — 2026-10-14 · D1 Master
   Dashboard (`a35ms` in vu2cpl-shack flows) and `nodered/build-flow.py` +
   regenerated `as3935-control-flow.json` here. The Vue `/shack` card already

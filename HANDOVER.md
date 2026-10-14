@@ -7,6 +7,12 @@
 
 ## Status
 
+**v0.4.3 written 2026-10-14 (built + host-tested, push with `./ota.sh`):**
+interrupt-path safeguards. Releases an IRQ line latched high > 1 s
+(`irq_unlatch`), and after 5 min with no IRQ (while the rate normally runs
+≥ 20/min) re-inits the chip (`as3935_reinit`), then restarts 5 min later if
+still silent (`boot_cause: irq_silence`). No daily reboot (Manoj's call).
+
 **v0.4.2 on the device since 2026-10-14 17:44 (OTA, `boot_cause: ota`):** adds the
 `wifi_off_test` action (disturbers counted with the radio on / off / on,
 result retained on `lightning/as3935/test`) and holds a lightning event that
@@ -1073,3 +1079,23 @@ Rejoin 2.2 s; no LWT/offline seen; noise 0, lightning 0. The test machinery work
   the disturber source stays unknown. They're classified as disturbers (not lightning) and throttled, so they
   cost nothing. With a weak battery the unit relies on wall power, so expect `boot_cause: brownout` after a
   mains blip; replacing the cell is in TODO.
+
+### 2026-10-14 evening — v0.4.3: interrupt-path safeguards (no daily reboot)
+
+Manoj asked whether a daily scheduled reboot would help. Answer: v0.4.1 already handles the flapping in ~90 s;
+the uncovered failure is lightning detection stalling silently (MQTT + heartbeat healthy, IRQ counter frozen),
+which a daily reboot would only cap at 24 h. He chose the targeted fix, no daily reboot.
+
+- `StuckLineWatch` (bridge_util.h) + `serviceIrq()`: IRQ pin high > 1 s with no ISR flag ⇒ `handleAs3935Event()`
+  (reads 0x03, which drops the line and handles whatever was waiting). Used by `loop()`, the WiFi-off test's
+  windows and its rejoin wait.
+- `SilenceWatch`: per-minute EWMA (0.8/0.2) of `counters.irq`, armed at ≥ 20/min; 5 min silent ⇒ REINIT
+  (`as3935Init()` + status), 5 more ⇒ RESTART (`irq_silence`). With the EWMA decaying during the wait, the
+  restart needs a pre-silence rate of roughly 190/min or more (0.8¹⁰ × rate ≥ 20); the deployed ~400/min
+  qualifies, slower sensors only get the re-init. A restart starts the EWMA at 0, so a genuinely silent sensor
+  is never acted on again until IRQs resume. Reset on every `set` and on `calibrate_tun_cap`, because they may
+  change the rate on purpose.
+- 24 host checks pass, flash 89.2%, rollback hook still `T verifyRollbackLater`.
+- Can't be exercised on the live unit without breaking it on purpose. The cleanest live check would be to
+  physically disconnect the AS3935's IRQ wire for > 10 min (expect `as3935_reinit` 1, then a restart with
+  `boot_cause: irq_silence`, then no further action while it stays disconnected). Not planned.

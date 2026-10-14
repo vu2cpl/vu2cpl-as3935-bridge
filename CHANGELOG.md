@@ -6,6 +6,48 @@ the `fw` field of every `lightning/as3935/status` MQTT payload.
 
 ---
 
+## v0.4.3 — 2026-10-14
+
+Two safeguards for the one failure v0.4.1's self-heal can't see: lightning
+detection stalling while MQTT and the heartbeat look healthy. Both disturber
+counter freezes (2026-10-08, 2026-10-14) were this kind of stall. v0.4.2's
+WiFi-off test showed the disturbers keep coming with the radio off, so a
+frozen counter means the firmware stopped servicing the IRQ, not a quiet
+source. No daily reboot (Manoj's call): these act in seconds, not up to 24 h.
+
+### Stuck IRQ line
+
+- The ISR fires on the RISING edge, and the AS3935 holds IRQ high until
+  register 0x03 is read. A missed or failed read leaves the line latched with
+  no new edge, ever. Now, if the line has been high for > 1 s with no ISR
+  flag, the firmware reads 0x03 (handling the waiting event) and the line
+  drops. Counted as **`irq_unlatch`** in the heartbeat.
+
+### IRQ silence watchdog
+
+- The deployed unit sees a steady ~400 IRQs/min. A per-minute EWMA of the IRQ
+  count arms the watchdog only while it is >= 20/min. **5 min with no IRQ ⇒
+  re-init the AS3935** (tunables, `CALIB_RCO`, clear INT; counted as
+  **`as3935_reinit`**); **still none 5 min later ⇒ restart**
+  (`boot_cause: irq_silence`). The restart needs a rate of roughly
+  190/min or more before the silence (the EWMA decays while it waits); slower
+  sensors only get the re-init.
+- No restart loops: after a restart the EWMA starts at 0, so a sensor that is
+  genuinely silent stays disarmed until IRQs flow again. Any `set` command and
+  `calibrate_tun_cap` reset the watchdog, because they may change the rate on
+  purpose (e.g. `mask_dist`).
+
+### Build / test
+
+- Flash 89.2% (1,169,365 bytes). `StuckLineWatch` and `SilenceWatch` live in
+  `src/bridge_util.h`; the host test grows to 24 checks (normal IRQ pulses
+  never trip; > 1 s latched does; steady 400/min never acts; silence ⇒ re-init
+  at 5 min, restart at 10; IRQs resuming cancel the restart; a fresh watch on a
+  silent sensor never acts in 3 h; 5/min with hour-long gaps never arms; the
+  millis() wrap).
+
+---
+
 ## v0.4.2 — 2026-10-14
 
 A test to settle what causes the steady ~400/min disturbers. The v0.4.1

@@ -27,6 +27,11 @@
 //     (retained) on lightning/as3935/test — is the ESP32 the disturber source?
 //   - a lightning event whose publish fails is held and sent once MQTT is
 //     back (the test takes the sensor offline on purpose; so does a flap)
+// v0.4.3 adds two interrupt-path safeguards (lightning detection can stall
+// silently while MQTT and the heartbeat look fine):
+//   - IRQ line high > 1 s with no ISR ⇒ read 0x03 to release it (irq_unlatch)
+//   - no IRQ for 5 min while the IRQ rate is normally ≥ 20/min ⇒ re-init the
+//     chip (as3935_reinit); still silent 5 min later ⇒ restart (irq_silence)
 //
 // Any divergence from the Python daemon's status/hb shape breaks the
 // Node-RED Lightning Antenna Protector flow — extend, don't rename.
@@ -107,6 +112,11 @@ constexpr uint16_t WIFI_TEST_DEFAULT_S = 60;
 constexpr uint16_t WIFI_TEST_MIN_S     = 10;
 constexpr uint16_t WIFI_TEST_MAX_S     = 120;
 constexpr uint32_t WIFI_TEST_REJOIN_MS = 30 * 1000;   // then the normal 5-min reconnect path
+
+// ── Interrupt-path safeguards (v0.4.3) ───────────────────────────────────
+constexpr uint32_t IRQ_STUCK_MS        = 1000;            // line high this long, no ISR ⇒ unlatch
+constexpr uint32_t IRQ_SILENCE_MS      = 5 * 60 * 1000;   // no IRQ this long ⇒ re-init, then restart
+constexpr float    IRQ_ARM_PER_MIN     = 20.0f;           // only when IRQs normally run at least this fast
 
 // ── AS3935 ──────────────────────────────────────────────────────────────
 constexpr uint8_t AS3935_I2C_ADDR  = 0x03;
@@ -219,6 +229,11 @@ uint16_t      wifiTestPendingSecs = 0; // set by the cmd callback, run from loop
 // Only the latest one is kept; the counters still count them all.
 struct PendingLightning { bool set = false; uint8_t distance = 0; uint32_t energy = 0; char ts[24] = ""; };
 PendingLightning pendingLightning;
+
+StuckLineWatch stuckIrq;
+SilenceWatch   irqSilence;
+uint32_t       irqUnlatches  = 0;   // since boot, in the heartbeat
+uint32_t       as3935Reinits = 0;   // since boot, in the heartbeat
 
 // ── Restart bookkeeping ──────────────────────────────────────────────────
 // Every deliberate restart goes through restartWith(), which leaves its cause
@@ -660,12 +675,13 @@ void publishHeartbeat() {
         "\"counters\":{\"lightning\":%lu,\"disturber\":%lu,"
         "\"noise\":%lu,\"irq\":%lu},"
         "\"rate_per_min\":{\"disturber\":%.1f,\"noise\":%.1f},"
-        "\"mqtt_reconnects\":%lu}",
+        "\"mqtt_reconnects\":%lu,\"irq_unlatch\":%lu,\"as3935_reinit\":%lu}",
         ts, (unsigned long)uptimeSeconds(), WiFi.RSSI(),
         (unsigned long)readVbat_mV(),
         (unsigned long)counters.lightning, (unsigned long)counters.disturber,
         (unsigned long)counters.noise,     (unsigned long)counters.irq,
-        distRate, noiseRate, (unsigned long)mqttReconnects);
+        distRate, noiseRate, (unsigned long)mqttReconnects,
+        (unsigned long)irqUnlatches, (unsigned long)as3935Reinits);
     hbPrevCounters = counters;
     hbPrevMs       = now;
     if (mqtt.publish(TOPIC_HB, buf, true)) {
@@ -763,6 +779,21 @@ void handleAs3935Event() {
     }
 }
 
+// Handles a pending IRQ, and releases a latched line the ISR never saw
+// (v0.4.3). Used by loop() and by the WiFi-off test's windows.
+void serviceIrq() {
+    if (irqFired) {
+        irqFired = false;
+        handleAs3935Event();
+        return;
+    }
+    if (stuckIrq.poll(millis(), digitalRead(PIN_AS3935_IRQ) == HIGH, irqFired, IRQ_STUCK_MS)) {
+        irqUnlatches++;
+        Serial.println("[as3935] IRQ line latched high with no ISR — reading INT to release it");
+        handleAs3935Event();   // reads 0x03 (clears the line) and handles the waiting event
+    }
+}
+
 // ── Command dispatcher ───────────────────────────────────────────────────
 bool handleSet(const char* key, JsonVariant value, char* err, size_t errlen) {
     if (strcmp(key, "nf") == 0) {
@@ -839,6 +870,7 @@ void handleAction(const char* action) {
     } else if (strcmp(action, "calibrate_tun_cap") == 0) {
         publishAck(true, "action:calibrate_tun_cap");
         calibrateTunCap();
+        irqSilence = SilenceWatch();   // retuned: the IRQ rate may change on purpose
         saveTunables();
         publishStatus("ready");
     } else if (strcmp(action, "reboot") == 0) {
@@ -893,6 +925,7 @@ void handleCmd(const char* payload, size_t length) {
         char what[48]; snprintf(what, sizeof(what), "set:%s", setKey);
         char errbuf[80];
         if (handleSet(setKey, doc["value"], errbuf, sizeof(errbuf))) {
+            irqSilence = SilenceWatch();   // a setting may change the IRQ rate on purpose (e.g. mask_dist)
             saveTunables();
             publishAck(true, what);
             publishStatus("ready");
@@ -1087,7 +1120,7 @@ WinCount countWindow(uint32_t ms, bool online) {
             flushPendingLightning();
             if (millis() - lastHb >= HEARTBEAT_MS) { lastHb = millis(); publishHeartbeat(); }
         }
-        if (irqFired) { irqFired = false; handleAs3935Event(); }
+        serviceIrq();
         delay(5);
     }
     return { counters.disturber - c0.disturber, counters.noise - c0.noise,
@@ -1115,7 +1148,7 @@ void runWifiOffTest(uint16_t secs) {
     WiFi.mode(WIFI_STA);
     WiFi.begin();               // stored credentials (saved by WiFiManager)
     while (WiFi.status() != WL_CONNECTED && millis() - tr < WIFI_TEST_REJOIN_MS) {
-        if (irqFired) { irqFired = false; handleAs3935Event(); }
+        serviceIrq();
         delay(50);
     }
     if (WiFi.status() != WL_CONNECTED) wifiWaitForReconnect();   // 5 min, then restart
@@ -1239,9 +1272,23 @@ void loop() {
         runWifiOffTest(secs);
     }
 
-    if (irqFired) {
-        irqFired = false;
-        handleAs3935Event();
+    serviceIrq();
+
+    switch (irqSilence.poll(millis(), counters.irq, IRQ_ARM_PER_MIN, IRQ_SILENCE_MS)) {
+        case SilenceWatch::REINIT:
+            as3935Reinits++;
+            Serial.printf("[as3935] no IRQ for %lu min (normally ~%.0f/min) — re-initialising the chip\n",
+                          (unsigned long)(IRQ_SILENCE_MS / 60000), irqSilence.ratePerMin);
+            as3935Init();
+            irqFired = false;
+            publishStatus("ready");
+            break;
+        case SilenceWatch::RESTART:
+            Serial.println("[as3935] still no IRQ after the re-init — restarting");
+            restartWith("irq_silence");
+            break;
+        default:
+            break;
     }
 
     uint32_t now = millis();

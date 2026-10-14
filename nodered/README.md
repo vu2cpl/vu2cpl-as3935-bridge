@@ -266,7 +266,7 @@ After any panel edit + `python3 nodered/build-flow.py` + re-import:
 | `lightning/as3935/cmd` | publish → ESP32 | Send a tuning command |
 | `lightning/as3935/cmd/ack` | ESP32 → subscribe | One-line ack/error |
 | `lightning/as3935/status` | ESP32 → subscribe (retained) | Full state — incl. `vbat_mv` + `vbat_offset_mv` (v0.3.0), `evt_interval_s` + `boot_cause` (v0.4.1) |
-| `lightning/as3935/hb` | ESP32 → subscribe (retained) | uptime + counters + `vbat_mv` (v0.3.0), `rate_per_min` + `mqtt_reconnects` (v0.4.1) |
+| `lightning/as3935/hb` | ESP32 → subscribe (retained) | uptime + counters + `vbat_mv` (v0.3.0), `rate_per_min` + `mqtt_reconnects` (v0.4.1), `irq_unlatch` + `as3935_reinit` (v0.4.3) |
 | `lightning/as3935` | ESP32 → subscribe | lightning/disturber/noise events. Since v0.4.1 disturber/noise are throttled to one per `evt_interval_s` with a `count` field, so the event log shows one row a minute, not ~6 a second |
 | `lightning/as3935/last_event` | ESP32 → subscribe (retained) | Latest event with `ts_epoch_ms` — backs the Events panel's Last Event card across restart |
 
