@@ -988,9 +988,11 @@ the device still runs v0.4.0.** v0.4.0 has no OTA, so the first install is a USB
 - **13:56:57 `modem_sleep: none`** (Manoj's call), sent via HA `mqtt.publish`; ack OK, persisted. Ping
   RTT fell from ~266 ms (`min`) to ~13 ms: the radio really is always on.
 - **13:57:26 `boot_cause: brownout`.** At the same moment `vbat_mv` went from ~4.72 V (on USB at the Mac)
-  to 3.99 V (on the 18650), so the likeliest cause is the USB cable being pulled and the supply switching
-  over. To confirm: if it browns out again on its normal supply with `none`, the always-on radio's extra
-  current is too much for the supply path, and `modem_sleep` should go back to `min`.
+  to 3.99 V (on the 18650). **Confirmed by Manoj: he pulled the USB cable, then connected wall power.** So
+  the brownout was the supply switchover, not `modem_sleep: none`, and the new `boot_cause` field caught it
+  on its first day. Plugging in wall power caused no reset: at 13:59:18 uptime 112 s, `mqtt_reconnects` 0,
+  vbat back to 4.19 V (charging). Still worth watching: a brownout on wall power with `none` would mean the
+  always-on radio's extra current is too much, and `modem_sleep` should go back to `min`.
 - **First disturber rates with the throttle on:** 426, 452, 236 and 350/min across the first heartbeats
   (bench, then just after the brownout). That's the same order as before (~380/min average over 4 days),
   so far no sign that per-event publishing was generating them. These readings were taken while the box
