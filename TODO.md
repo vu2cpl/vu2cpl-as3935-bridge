@@ -25,8 +25,13 @@ bottom (they're not just deleted so the work log stays intact).
   so the MQTT publishing isn't causing them. Next: a firmware action that
   turns WiFi off for ~60 s and counts disturbers (OTA makes this cheap).
   **Done 2026-10-14 17:45 with v0.4.2's `wifi_off_test`: 405 / 398 / 403 per
-  min (on / radio off / on), so it's not the WiFi radio either.** Next:
-  unplug the wall adapter for ~2 min (run on the 18650) and watch the rate.
+  min (on / radio off / on), so it's not the WiFi radio either.** The
+  next check (run on the 18650 with the wall adapter unplugged) was
+  **dropped by Manoj, 2026-10-14**: the battery is in poor shape. Source
+  left unknown; the disturbers are harmless and throttled, so this is parked.
+- [ ] **The 18650 is weak (Manoj, 2026-10-14).** The unit effectively
+  depends on wall power; a mains blip may now mean a brownout reset
+  (`boot_cause: brownout`) rather than a ride-through. Replace when convenient.
 - [ ] **IRQ stuck-high safeguard (small firmware item).** Edge-triggered IRQ +
   a missed read of 0x03 leaves the line latched and the counter frozen
   (likely what froze it on 8 Oct and 14 Oct). Poll the pin in `loop()`; if

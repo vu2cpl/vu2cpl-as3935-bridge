@@ -1068,3 +1068,8 @@ Rejoin 2.2 s; no LWT/offline seen; noise 0, lightning 0. The test machinery work
   edge ever arrives. Cheap safeguard for a future build: in `loop()`, if the IRQ pin has been high for > ~1 s
   with no `irqFired`, read 0x03 to unlatch it. Not seen since v0.4.1's self-heal, which reboots out of that
   state anyway.
+
+- **Parked (Manoj, 2026-10-14):** the run-on-battery check is dropped because the 18650 is in poor shape;
+  the disturber source stays unknown. They're classified as disturbers (not lightning) and throttled, so they
+  cost nothing. With a weak battery the unit relies on wall power, so expect `boot_cause: brownout` after a
+  mains blip; replacing the cell is in TODO.
