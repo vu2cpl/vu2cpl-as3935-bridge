@@ -7,7 +7,7 @@
 
 ## Status
 
-**v0.4.3 written 2026-10-14 (built + host-tested, push with `./ota.sh`):**
+**v0.4.3 on the device since 2026-10-14 17:59 (OTA, `boot_cause: ota`; heartbeat shows `irq_unlatch` 0, `as3935_reinit` 0, disturbers ~400/min):**
 interrupt-path safeguards. Releases an IRQ line latched high > 1 s
 (`irq_unlatch`), and after 5 min with no IRQ (while the rate normally runs
 ≥ 20/min) re-inits the chip (`as3935_reinit`), then restarts 5 min later if

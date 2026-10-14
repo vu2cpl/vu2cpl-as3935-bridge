@@ -32,8 +32,8 @@ bottom (they're not just deleted so the work log stays intact).
 - [ ] **The 18650 is weak (Manoj, 2026-10-14).** The unit effectively
   depends on wall power; a mains blip may now mean a brownout reset
   (`boot_cause: brownout`) rather than a ride-through. Replace when convenient.
-- [ ] **OTA v0.4.3 to the unit, then confirm** the heartbeat carries
-  `irq_unlatch` and `as3935_reinit` (both 0 normally).
+- [x] **OTA v0.4.3 to the unit** — 2026-10-14 17:59 · heartbeat carries
+  `irq_unlatch` 0 and `as3935_reinit` 0; disturbers ~400/min; 0 reconnects.
 - [ ] *(idea)* shack-health: WARN when `rate_per_min.disturber` is 0 for a
   sensor that normally runs ~400/min, as the outside view of a stalled
   detection path (the firmware now acts on it itself).
