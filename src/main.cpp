@@ -21,6 +21,12 @@
 //   - OTA over HTTP, opened for 10 min by the ota_open cmd action; app
 //     rollback if a new image doesn't reach MQTT before its first reboot
 //   - modem_sleep "none" (WIFI_PS_NONE) as a third option
+// v0.4.2 adds:
+//   - wifi_off_test cmd action: counts disturbers for N s with WiFi on, N s
+//     with the radio off, N s on again, and publishes the three counts
+//     (retained) on lightning/as3935/test — is the ESP32 the disturber source?
+//   - a lightning event whose publish fails is held and sent once MQTT is
+//     back (the test takes the sensor offline on purpose; so does a flap)
 //
 // Any divergence from the Python daemon's status/hb shape breaks the
 // Node-RED Lightning Antenna Protector flow — extend, don't rename.
@@ -75,6 +81,7 @@ constexpr const char* TOPIC_HB         = "lightning/as3935/hb";
 constexpr const char* TOPIC_CMD        = "lightning/as3935/cmd";
 constexpr const char* TOPIC_ACK        = "lightning/as3935/cmd/ack";
 constexpr const char* TOPIC_LAST_EVENT = "lightning/as3935/last_event";
+constexpr const char* TOPIC_TEST       = "lightning/as3935/test";   // v0.4.2, retained
 constexpr const char* CLIENT_ID    = "as3935-bridge";
 
 constexpr uint32_t HEARTBEAT_MS        = 30 * 1000;
@@ -92,6 +99,14 @@ constexpr uint32_t CHURN_WINDOW_MS      = 10 * 60 * 1000;  // … inside this wi
 constexpr uint16_t    OTA_PORT      = 80;
 constexpr uint32_t    OTA_WINDOW_MS = 10 * 60 * 1000;
 constexpr const char* OTA_USER      = "ota";
+
+// ── WiFi-off disturber test (v0.4.2) ─────────────────────────────────────
+// Three windows of `secs`: on, off, on. 3 × 120 s + reconnect stays well
+// inside PUBLISH_WDT_MS (heartbeats keep flowing in the on windows anyway).
+constexpr uint16_t WIFI_TEST_DEFAULT_S = 60;
+constexpr uint16_t WIFI_TEST_MIN_S     = 10;
+constexpr uint16_t WIFI_TEST_MAX_S     = 120;
+constexpr uint32_t WIFI_TEST_REJOIN_MS = 30 * 1000;   // then the normal 5-min reconnect path
 
 // ── AS3935 ──────────────────────────────────────────────────────────────
 constexpr uint8_t AS3935_I2C_ADDR  = 0x03;
@@ -197,6 +212,13 @@ uint32_t      mqttReconnects = 0;     // since boot, reported in the heartbeat
 EventThrottle thrDisturber, thrNoise;
 Counters      hbPrevCounters;         // counters at the previous heartbeat, for rate_per_min
 uint32_t      hbPrevMs = 0;
+uint16_t      wifiTestPendingSecs = 0; // set by the cmd callback, run from loop()
+
+// A lightning event that couldn't be published (MQTT down) is kept and sent
+// once the connection is back, so a strike during an outage isn't lost.
+// Only the latest one is kept; the counters still count them all.
+struct PendingLightning { bool set = false; uint8_t distance = 0; uint32_t energy = 0; char ts[24] = ""; };
+PendingLightning pendingLightning;
 
 // ── Restart bookkeeping ──────────────────────────────────────────────────
 // Every deliberate restart goes through restartWith(), which leaves its cause
@@ -701,8 +723,15 @@ void handleAs3935Event() {
             "{\"event\":\"lightning\",\"distance\":%u,\"energy\":%lu,"
             "\"timestamp\":\"%s\"}",
             distance, (unsigned long)energy, ts);
-        mqtt.publish(TOPIC_EVENT, buf);
-        publishLastEvent("lightning", distance, energy);
+        if (mqtt.publish(TOPIC_EVENT, buf)) {
+            publishLastEvent("lightning", distance, energy);
+        } else {
+            pendingLightning.set      = true;
+            pendingLightning.distance = distance;
+            pendingLightning.energy   = energy;
+            strncpy(pendingLightning.ts, ts, sizeof(pendingLightning.ts) - 1);
+            Serial.println("[as3935] lightning NOT published (MQTT down) — held for reconnect");
+        }
         Serial.printf("[as3935] ⚡ lightning d=%ukm e=%lu\n",
                       distance, (unsigned long)energy);
     } else if (intReg == INT_DISTURBER) {
@@ -870,6 +899,20 @@ void handleCmd(const char* payload, size_t length) {
         } else {
             publishAck(false, what, errbuf);
         }
+    } else if (action && strcmp(action, "wifi_off_test") == 0) {
+        // Runs from loop(), not here: it disconnects MQTT, which must not
+        // happen inside PubSubClient's own callback.
+        int secs = doc["secs"] | (int)WIFI_TEST_DEFAULT_S;
+        if (secs < WIFI_TEST_MIN_S || secs > WIFI_TEST_MAX_S) {
+            publishAck(false, "action:wifi_off_test", "secs out of range 10..120");
+        } else {
+            wifiTestPendingSecs = (uint16_t)secs;
+            char what[112];
+            snprintf(what, sizeof(what),
+                     "action:wifi_off_test secs=%d: on/off/on, ~%ds offline, result on %s",
+                     secs, secs + 5, TOPIC_TEST);
+            publishAck(true, what);
+        }
     } else if (action) {
         handleAction(action);
     } else {
@@ -1027,6 +1070,91 @@ void otaLoop() {
     }
 }
 
+// ── WiFi-off disturber test (v0.4.2) ─────────────────────────────────────
+// Is the ESP32's own WiFi the disturber source? The 2026-10-14 A/B/A test
+// ruled out the per-event MQTT traffic; this switches the radio off entirely.
+struct WinCount { uint32_t dist, noise, light; float secs; };
+void flushPendingLightning();   // below
+
+// Services AS3935 IRQs for `ms`; while online also keeps MQTT and the
+// heartbeat going. Returns the counter deltas over the window.
+WinCount countWindow(uint32_t ms, bool online) {
+    Counters c0 = counters;
+    uint32_t t0 = millis();
+    while (millis() - t0 < ms) {
+        if (online) {
+            mqtt.loop();
+            flushPendingLightning();
+            if (millis() - lastHb >= HEARTBEAT_MS) { lastHb = millis(); publishHeartbeat(); }
+        }
+        if (irqFired) { irqFired = false; handleAs3935Event(); }
+        delay(5);
+    }
+    return { counters.disturber - c0.disturber, counters.noise - c0.noise,
+             counters.lightning - c0.lightning, (millis() - t0) / 1000.0f };
+}
+
+int fmtWin(char* out, size_t n, const char* name, const WinCount& w) {
+    return snprintf(out, n, "\"%s\":{\"disturber\":%lu,\"noise\":%lu,\"lightning\":%lu,\"secs\":%.1f,\"per_min\":%.1f}",
+                    name, (unsigned long)w.dist, (unsigned long)w.noise, (unsigned long)w.light,
+                    w.secs, w.secs > 0 ? w.dist * 60.0f / w.secs : 0.0f);
+}
+
+void runWifiOffTest(uint16_t secs) {
+    const uint32_t ms = secs * 1000UL;
+    Serial.printf("[test] wifi_off_test: %us on, %us off, %us on\n", secs, secs, secs);
+    WinCount before = countWindow(ms, true);
+
+    mqtt.disconnect();          // clean DISCONNECT: the broker does not fire the LWT
+    delay(100);
+    WiFi.mode(WIFI_OFF);        // radio fully off (driver stopped)
+    Serial.println("[test] WiFi off");
+    WinCount off = countWindow(ms, false);
+
+    uint32_t tr = millis();
+    WiFi.mode(WIFI_STA);
+    WiFi.begin();               // stored credentials (saved by WiFiManager)
+    while (WiFi.status() != WL_CONNECTED && millis() - tr < WIFI_TEST_REJOIN_MS) {
+        if (irqFired) { irqFired = false; handleAs3935Event(); }
+        delay(50);
+    }
+    if (WiFi.status() != WL_CONNECTED) wifiWaitForReconnect();   // 5 min, then restart
+    applyModemSleep();
+    mqttConnect();
+    publishStatus("ready");
+    flushPendingLightning();    // a strike during the off window goes out now
+    float rejoin = (millis() - tr) / 1000.0f;
+    Serial.printf("[test] back online after %.1fs\n", rejoin);
+
+    WinCount after = countWindow(ms, true);
+
+    char ts[24]; isoNow(ts, sizeof(ts));
+    char buf[480];
+    int n = snprintf(buf, sizeof(buf), "{\"test\":\"wifi_off\",\"ts\":\"%s\",\"fw\":\"%s\",\"secs\":%u,",
+                     ts, FIRMWARE_VERSION, secs);
+    n += fmtWin(buf + n, sizeof(buf) - n, "on_before", before);  buf[n++] = ',';
+    n += fmtWin(buf + n, sizeof(buf) - n, "off", off);           buf[n++] = ',';
+    n += fmtWin(buf + n, sizeof(buf) - n, "on_after", after);
+    n += snprintf(buf + n, sizeof(buf) - n, ",\"rejoin_s\":%.1f}", rejoin);
+    if (n > 0 && n < (int)sizeof(buf)) {
+        bool ok = mqtt.publish(TOPIC_TEST, (const uint8_t*)buf, n, true);
+        Serial.printf("[test] result %s: %s\n", ok ? "published" : "NOT published", buf);
+    }
+}
+
+void flushPendingLightning() {
+    if (!pendingLightning.set || !mqtt.connected()) return;
+    char buf[200];
+    snprintf(buf, sizeof(buf),
+        "{\"event\":\"lightning\",\"distance\":%u,\"energy\":%lu,\"timestamp\":\"%s\",\"delayed\":true}",
+        pendingLightning.distance, (unsigned long)pendingLightning.energy, pendingLightning.ts);
+    if (mqtt.publish(TOPIC_EVENT, buf)) {
+        publishLastEvent("lightning", pendingLightning.distance, pendingLightning.energy);
+        pendingLightning.set = false;
+        Serial.println("[as3935] held lightning event published");
+    }
+}
+
 // ── Watchdog ─────────────────────────────────────────────────────────────
 void checkPublishWatchdog() {
     if (lastSuccessfulPublishMs == 0) return;  // not armed until first success
@@ -1104,6 +1232,12 @@ void loop() {
     mqtt.loop();
     if (!appValidated && lastSuccessfulPublishMs) markAppValidIfPending();
     otaLoop();
+    flushPendingLightning();
+    if (wifiTestPendingSecs) {
+        uint16_t secs = wifiTestPendingSecs;
+        wifiTestPendingSecs = 0;
+        runWifiOffTest(secs);
+    }
 
     if (irqFired) {
         irqFired = false;

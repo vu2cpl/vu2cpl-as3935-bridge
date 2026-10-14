@@ -24,6 +24,7 @@ bottom (they're not just deleted so the work log stays intact).
   test: identical rate with the throttle on (397.3/min) and off (397.4),
   so the MQTT publishing isn't causing them. Next: a firmware action that
   turns WiFi off for ~60 s and counts disturbers (OTA makes this cheap).
+  **v0.4.2 has it** (`wifi_off_test`): push with `./ota.sh`, then run it.
   ~0 with the radio off ⇒ the ESP32 is the source (fix: distance /
   shielding / ferrites). See HANDOVER 2026-10-14.
 - [ ] **(next firmware) Decouple MQTT-cred save from WiFi connect.**

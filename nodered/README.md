@@ -302,6 +302,7 @@ After any panel edit + `python3 nodered/build-flow.py` + re-import:
 | `calibrate_tun_cap` | ~35 s LCO sweep, picks best cap, persists |
 | `query_vbat` | One-shot fresh battery reading; acks `action:query_vbat vbat_mv=NNNN` and republishes status so the dashboard updates atomically |
 | `reboot` | Restart (`boot_cause` reads `cmd_reboot` afterwards) |
+| `wifi_off_test` | (v0.4.2) `{"action":"wifi_off_test","secs":60}`, 10–120 s. Counts disturbers for `secs` with WiFi on, `secs` with the radio off, `secs` on again; result retained on `lightning/as3935/test`. The sensor is offline for about `secs` + 5 s (clean disconnect, no LWT). A strike in that window is published on reconnect |
 | `ota_open` | (v0.4.1) Start the HTTP update server for 10 min; the ack carries the URL. Upload with `../ota.sh` from the repo root. Refused if no MQTT password is stored, since that is the upload password |
 | `factory_reset_wifi` | Erase WiFi creds, restart into captive portal |
 

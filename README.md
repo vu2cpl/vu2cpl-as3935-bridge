@@ -66,11 +66,12 @@ Antenna Protector flow needs **zero changes**:
 
 | Topic | Direction | Payload |
 |-------|-----------|---------|
-| `lightning/as3935` | publish | Lightning: `{event:"lightning", distance, energy, timestamp}`, always immediate. Disturber: `{event:"disturber", timestamp, count}`. Noise: `{event:"noise", timestamp, count}`. Since v0.4.1 disturber/noise are **throttled** to one publish per `evt_interval_s` (default 60 s, `0` = every event as before); `count` is how many events that publish stands for. The full tally is in the heartbeat counters. |
+| `lightning/as3935` | publish | Lightning: `{event:"lightning", distance, energy, timestamp}`, always immediate; if MQTT is down it is held and sent on reconnect with `"delayed":true` (v0.4.2). Disturber: `{event:"disturber", timestamp, count}`. Noise: `{event:"noise", timestamp, count}`. Since v0.4.1 disturber/noise are **throttled** to one publish per `evt_interval_s` (default 60 s, `0` = every event as before); `count` is how many events that publish stands for. The full tally is in the heartbeat counters. |
 | `lightning/as3935/status` | publish (retained) | Full state: `{event, ts, fw, ip, rssi, nf, wdth, srej, tun_cap, mask_dist, min_num_lightning, afe_gb, modem_sleep, evt_interval_s, boot_cause, vbat_mv, vbat_offset_mv, irq_pin, calib_trco, calib_srco, …}` on (re)connect and every 5 min. `modem_sleep` is `max` / `min` / `none` (v0.4.1). `boot_cause` (v0.4.1) says why the last restart happened: `power_on`, `brownout`, `panic`, a watchdog, or the firmware's own reason (`mqtt_churn`, `publish_wdt`, `mqtt_fail`, `wifi_timeout`, `cmd_reboot`, `ota`, …). LWT publishes the same topic with `event:"offline"` retained. |
 | `lightning/as3935/hb` | publish (retained) | `{alive:true, ts, uptime_s, rssi, vbat_mv, counters:{lightning, disturber, noise, irq}, rate_per_min:{disturber, noise}, mqtt_reconnects}` every 30 s. `rate_per_min` (since the previous heartbeat) and `mqtt_reconnects` (since boot) are v0.4.1. |
 | `lightning/as3935/cmd` | **subscribe** | `{"set":"<key>","value":<v>}` or `{"action":"<name>"}` — live tuning. See [`nodered/README.md`](nodered/README.md). |
 | `lightning/as3935/cmd/ack` | publish | `{ok, cmd, error?, ts}` for every received command. |
+| `lightning/as3935/test` | publish (retained) | (v0.4.2) Result of the `wifi_off_test` action: disturber/noise/lightning counts and `per_min` for `on_before`, `off` (radio off) and `on_after`, plus `rejoin_s`. |
 | `lightning/as3935/last_event` | publish (retained) | `{event, distance, energy, timestamp, ts_epoch_ms}` — most recent *published* disturber/noise/lightning event (so at most one disturber/noise update per `evt_interval_s`). Retained so the shack dashboard's "LAST SEEN" survives Node-RED restart. `ts_epoch_ms` is `time(nullptr) * 1000` (ms since epoch). `distance`/`energy` are `0` for disturber/noise (non-lightning events don't have physically meaningful values). |
 
 `ts` / `timestamp` are local-IST ISO 8601 strings (`YYYY-MM-DDTHH:MM:SS`),
@@ -137,6 +138,11 @@ See [`WIRING.md`](WIRING.md) for the connection diagram and bench
 bring-up checklist.
 
 ## Status
+
+**v0.4.2 — WiFi-off disturber test (2026-10-14).** New `wifi_off_test`
+action counts disturbers with the radio on, off and on again, to tell
+whether the ESP32 itself causes the steady ~400/min disturbers. A strike
+during any MQTT outage is now held and sent on reconnect.
 
 **v0.4.1 — self-heal, quieter events, OTA (2026-10-14, running on the
 deployed unit; OTA verified the same day).** After two outages (2026-10-10, 2026-10-14) where the

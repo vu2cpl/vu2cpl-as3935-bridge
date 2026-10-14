@@ -6,6 +6,38 @@ the `fw` field of every `lightning/as3935/status` MQTT payload.
 
 ---
 
+## v0.4.2 — 2026-10-14
+
+A test to settle what causes the steady ~400/min disturbers. The v0.4.1
+A/B/A test showed the per-event MQTT traffic isn't it (397.3/min throttled
+vs 397.4/min publishing every event); the remaining suspect is the ESP32's
+WiFi radio itself.
+
+### Disturber test
+
+- **`{"action":"wifi_off_test","secs":60}`** (10–120 s, default 60). Runs
+  from `loop()` (not inside the MQTT callback): counts disturbers for `secs`
+  with WiFi on, disconnects MQTT cleanly (so no LWT, the dashboards don't
+  see "offline"), switches the radio fully off (`WiFi.mode(WIFI_OFF)`) for
+  `secs`, rejoins with the stored credentials, counts `secs` more, and
+  publishes, **retained**, on the new topic **`lightning/as3935/test`**:
+  `{test:"wifi_off", ts, fw, secs, on_before:{disturber, noise, lightning,
+  secs, per_min}, off:{…}, on_after:{…}, rejoin_s}`. Offline for about
+  `secs` + 5 s. Heartbeats keep going in the two on windows.
+
+### Lightning while offline
+
+- A lightning event whose publish fails (MQTT down: the test's off window,
+  or a flap) is held and published as soon as MQTT is back, with
+  `"delayed":true`. Only the latest one is held; the counters count all.
+
+### Build / test
+
+- Flash 89.2% (1,168,709 bytes). Host check of the result message:
+  valid JSON, 357 bytes with every counter at its maximum (MQTT buffer 512).
+
+---
+
 ## v0.4.1 — 2026-10-14
 
 Self-healing and a much quieter event stream, after two outages

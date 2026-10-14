@@ -7,6 +7,11 @@
 
 ## Status
 
+**v0.4.2 written 2026-10-14 (built, not yet pushed to the device):** adds the
+`wifi_off_test` action (disturbers counted with the radio on / off / on,
+result retained on `lightning/as3935/test`) and holds a lightning event that
+fails to publish until MQTT is back. Goes on with `./ota.sh`.
+
 **v0.4.1 running on the deployed unit since 2026-10-14 13:54 (USB), OTA proven 13:55.**
 Self-heal on MQTT churn (5 reconnects in 10 min ⇒ restart), `boot_cause`
 in status, disturber/noise publishes throttled to one a minute
@@ -1024,3 +1029,15 @@ status 16:02:34).
   noise (ubersdr-box HANDOVER "Local QRM investigation").
 - The throttle stays at 60 regardless: the disturbers are harmless to detection, and v0.4.0's ~13 MQTT
   publishes a second bought nothing.
+
+### 2026-10-14 — v0.4.2: WiFi-off disturber test
+
+Manoj's go after the A/B/A result. `wifi_off_test` runs from `loop()` (the cmd callback only schedules it,
+because disconnecting MQTT inside PubSubClient's callback is asking for trouble): on-window → clean
+`mqtt.disconnect()` (no LWT) → `WiFi.mode(WIFI_OFF)` → off-window → `WiFi.mode(WIFI_STA); WiFi.begin()`
+(stored creds) → `applyModemSleep()` → reconnect → on-window → retained result on `lightning/as3935/test`.
+`secs` capped at 120 so 3 windows + rejoin stay well inside the 10-min publish watchdog. Because the test
+takes the sensor offline on purpose, a lightning event whose publish fails is now held (latest only) and sent
+on reconnect with `"delayed":true`; that also helps during any flap. Node-RED subscribes to exact
+`lightning/as3935/*` topics only, so the new `test` topic can't be mistaken for an event. Not testable without
+the board: the radio-off / rejoin cycle itself; the result format was checked on the host (valid JSON, 357 B max).
